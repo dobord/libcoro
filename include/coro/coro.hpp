@@ -29,7 +29,9 @@
     #include "coro/net/udp/peer.hpp"
 #endif
 
+#include "coro/condition_variable.hpp"
 #include "coro/event.hpp"
+#include "coro/facade.hpp"
 #include "coro/generator.hpp"
 #include "coro/latch.hpp"
 #include "coro/mutex.hpp"
