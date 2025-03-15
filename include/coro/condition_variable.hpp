@@ -9,6 +9,7 @@
 #endif
 
 #include "coro/mutex.hpp"
+#include <unordered_set>
 
 namespace coro
 {
@@ -190,7 +191,6 @@ public:
 
         strategy_based_on_io_scheduler& m_strategy;
         std::coroutine_handle<>         m_awaiting_coroutine;
-        std::atomic<wait_operation*>    m_next{nullptr};
     };
 
     void notify_one() noexcept;
@@ -210,9 +210,9 @@ protected:
     /// A scheduler is needed to suspend coroutines and then wake them up upon notification or timeout.
     std::weak_ptr<io_scheduler> m_scheduler;
 
-    /// A list of grabbed internal waiters that are only accessed by the notify'er or task that was cancelled due to
+    /// A set of grabbed internal waiters that are only accessed by the notify'er or task that was cancelled due to
     /// timeout.
-    std::atomic<wait_operation*> m_internal_waiters{nullptr};
+    std::unordered_set<std::coroutine_handle<>> m_internal_waiters;
 
     /// An atomic-based mutex analog to prevent race conditions between the notify'er and the task being cancelled on
     /// timeout. unlocked == nullptr
@@ -233,15 +233,17 @@ protected:
     class wait_operation_guard
     {
     public:
-        explicit wait_operation_guard(strategy_based_on_io_scheduler* cv) noexcept;
+        explicit wait_operation_guard(strategy_based_on_io_scheduler* strategy) noexcept;
         ~wait_operation_guard();
         operator bool() const noexcept;
-        wait_operation* value() const noexcept;
-        void            set_value(wait_operation* value) noexcept;
+        std::coroutine_handle<>                     value() const noexcept;
+        std::unordered_set<std::coroutine_handle<>> values() const noexcept;
+        void                                        set_value(std::coroutine_handle<> value) noexcept;
+        void set_values(std::unordered_set<std::coroutine_handle<>> values) noexcept;
 
     private:
-        strategy_based_on_io_scheduler* m_cv{};
-        wait_operation*                 m_value{};
+        strategy_based_on_io_scheduler*             m_strategy{};
+        std::unordered_set<std::coroutine_handle<>> m_values{};
     };
 
     /// Extract one waiter from @ref m_internal_waiters
