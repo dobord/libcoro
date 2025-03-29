@@ -249,8 +249,6 @@ public:
                     tail_node, new_node, std::memory_order::release, std::memory_order::relaxed);
                 return;
             }
-
-            std::this_thread::sleep_for(1us);
         }
     }
 
@@ -305,8 +303,6 @@ public:
                     head_guard.remove();
                 return result;
             }
-
-            std::this_thread::sleep_for(1us);
         }
     }
 
