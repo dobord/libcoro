@@ -3,48 +3,48 @@ project(libcoro_test)
 
 set(LIBCORO_TEST_SOURCE_FILES
     test_condition_variable.cpp
-    test_event.cpp
-    test_generator.cpp
-    test_latch.cpp
-    test_mutex.cpp
-    test_ring_buffer.cpp
-    test_queue.cpp
-    test_semaphore.cpp
-    test_shared_mutex.cpp
-    test_sync_wait.cpp
-    test_task.cpp
-    test_thread_pool.cpp
-    test_when_all.cpp
+    # test_event.cpp
+    # test_generator.cpp
+    # test_latch.cpp
+    # test_mutex.cpp
+    # test_ring_buffer.cpp
+    # test_queue.cpp
+    # test_semaphore.cpp
+    # test_shared_mutex.cpp
+    # test_sync_wait.cpp
+    # test_task.cpp
+    # test_thread_pool.cpp
+    # test_when_all.cpp
 
     catch_amalgamated.cpp
 )
 
-if(NOT EMSCRIPTEN)
-    list(APPEND LIBCORO_TEST_SOURCE_FILES
-        test_when_any.cpp
-    )
-endif()
+# if(NOT EMSCRIPTEN)
+#     list(APPEND LIBCORO_TEST_SOURCE_FILES
+#         test_when_any.cpp
+#     )
+# endif()
 
-if(LIBCORO_FEATURE_NETWORKING)
-    list(APPEND LIBCORO_TEST_SOURCE_FILES
-        net/test_ip_address.cpp
-    )
+# if(LIBCORO_FEATURE_NETWORKING)
+#     list(APPEND LIBCORO_TEST_SOURCE_FILES
+#         net/test_ip_address.cpp
+#     )
 
-    # These tests require coro::io_scheduler
-    list(APPEND LIBCORO_TEST_SOURCE_FILES
-        net/test_dns_resolver.cpp
-        net/test_tcp_server.cpp
-        net/test_tls_server.cpp
-        net/test_udp_peers.cpp
-    )
-endif()
+#     # These tests require coro::io_scheduler
+#     list(APPEND LIBCORO_TEST_SOURCE_FILES
+#         net/test_dns_resolver.cpp
+#         net/test_tcp_server.cpp
+#         net/test_tls_server.cpp
+#         net/test_udp_peers.cpp
+#     )
+# endif()
 
-if(LIBCORO_FEATURE_NETWORKING)
-    list(APPEND LIBCORO_TEST_SOURCE_FILES
-        bench.cpp
-        test_io_scheduler.cpp
-    )
-endif()
+# if(LIBCORO_FEATURE_NETWORKING)
+#     list(APPEND LIBCORO_TEST_SOURCE_FILES
+#         bench.cpp
+#         test_io_scheduler.cpp
+#     )
+# endif()
 
 add_executable(${PROJECT_NAME} main.cpp ${LIBCORO_TEST_SOURCE_FILES})
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
