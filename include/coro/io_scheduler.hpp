@@ -18,7 +18,8 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <stop_token>
+// unified stop_token support
+#include "coro/stop_token_compat.hpp"
 #include <thread>
 #include <vector>
 

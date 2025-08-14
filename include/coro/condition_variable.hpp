@@ -15,7 +15,7 @@
 #include <optional>
 
 #ifdef LIBCORO_FEATURE_NETWORKING
-#include <stop_token>
+    #include "coro/stop_token_compat.hpp"
 #endif
 
 namespace coro
@@ -102,7 +102,7 @@ private:
         predicate_type m_predicate;
     };
 
-#ifndef EMSCRIPTEN
+#if !defined(EMSCRIPTEN) && LIBCORO_HAS_STOP_TOKEN
 
     struct awaiter_with_predicate_stop_token : public awaiter_base
     {
@@ -427,7 +427,7 @@ public:
         predicate_type predicate
     ) -> awaiter_with_predicate;
 
-#ifndef EMSCRIPTEN
+#if !defined(EMSCRIPTEN) && LIBCORO_HAS_STOP_TOKEN
     /**
      * @brief Waits until notified and wakes up if a stop is requseted or the predicate passes.
      *
@@ -441,7 +441,7 @@ public:
         std::stop_token stop_token,
         predicate_type predicate
     ) -> awaiter_with_predicate_stop_token;
-#endif
+#endif // stop_token section
 
 #ifdef LIBCORO_FEATURE_NETWORKING
 

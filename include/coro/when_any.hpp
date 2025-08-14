@@ -15,7 +15,7 @@
     #include <cassert>
     #include <coroutine>
     #include <optional>
-    #include <stop_token>
+    #include "coro/stop_token_compat.hpp"
     #include <utility>
     #include <vector>
 

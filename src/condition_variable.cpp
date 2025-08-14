@@ -78,7 +78,7 @@ auto condition_variable::awaiter_with_predicate::on_notify() -> coro::task<condi
     co_return notify_status_t::not_ready;
 }
 
-#ifndef EMSCRIPTEN
+#if !defined(EMSCRIPTEN) && LIBCORO_HAS_STOP_TOKEN
 
 condition_variable::awaiter_with_predicate_stop_token::awaiter_with_predicate_stop_token(
     coro::condition_variable& cv,
@@ -123,7 +123,7 @@ auto condition_variable::awaiter_with_predicate_stop_token::on_notify() -> coro:
     co_return notify_status_t::not_ready;
 }
 
-#endif
+#endif // stop_token section
 
 #ifdef LIBCORO_FEATURE_NETWORKING
 
@@ -264,7 +264,7 @@ auto condition_variable::wait(
     return awaiter_with_predicate{*this, lock, std::move(predicate)};
 }
 
-#ifndef EMSCRIPTEN
+#if !defined(EMSCRIPTEN) && LIBCORO_HAS_STOP_TOKEN
 
 auto condition_variable::wait(
     coro::scoped_lock& lock,
@@ -275,6 +275,6 @@ auto condition_variable::wait(
     return awaiter_with_predicate_stop_token{*this, lock, std::move(predicate), std::move(stop_token)};
 }
 
-#endif
+#endif // stop_token wait overload
 
 } // namespace coro
