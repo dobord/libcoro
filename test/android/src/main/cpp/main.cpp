@@ -328,12 +328,8 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
         else
         {
             // Default excludes for fragile/slow tests on emulator environment
-            argv.push_back("~[tls_server]");
-            argv.push_back("~[tcp_server]");
-            argv.push_back("~[dns]");
             argv.push_back("~[bench]");
-            argv.push_back("~[io_scheduler]");
-            argv.push_back("~[thread_pool]");
+            argv.push_back("~[ring_buffer]");
             ui_append_line("Using default test excludes suitable for emulator.");
         }
 
