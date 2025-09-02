@@ -44,37 +44,32 @@ set(LIBCORO_BUILD_EXAMPLES OFF CACHE BOOL "")
 add_subdirectory(${LIBCORO_DIR} external_libcoro)
 find_library(ANDROID_LOG_LIB log)
 
-# Collect libcoro test sources (without their own main.cpp which defines Catch2 main)
+# Import test source list from canonical test/CMakeLists.txt to avoid duplication
 set(LIBCORO_TEST_DIR ${LIBCORO_DIR}/test)
-message(STATUS "[android] LIBCORO_TEST_DIR=${LIBCORO_TEST_DIR}")
-# Minimal subset of tests matching CI filter tags: event,generator,latch,mutex,queue,semaphore
-set(LIBCORO_TEST_SOURCES
-	${LIBCORO_TEST_DIR}/test_event.cpp
-	${LIBCORO_TEST_DIR}/test_generator.cpp
-	${LIBCORO_TEST_DIR}/test_latch.cpp
-	${LIBCORO_TEST_DIR}/test_mutex.cpp
-	${LIBCORO_TEST_DIR}/test_queue.cpp
-	${LIBCORO_TEST_DIR}/test_semaphore.cpp
+set(LIBCORO_COLLECT_TEST_SOURCES_ONLY ON)
+include(${LIBCORO_TEST_DIR}/CMakeLists.txt) # populates LIBCORO_TEST_SOURCE_FILES
+message(STATUS "[android] Imported test sources: ${LIBCORO_TEST_SOURCE_FILES}")
+
+# Whitelist subset relevant for current CI filter to reduce build time
+set(_ANDROID_TEST_WHITELIST
+	test_event.cpp
+	test_generator.cpp
+	test_latch.cpp
+	test_mutex.cpp
+	test_queue.cpp
+	test_semaphore.cpp
 )
+set(LIBCORO_ANDROID_TEST_SOURCES)
+foreach(src IN LISTS LIBCORO_TEST_SOURCE_FILES)
+	get_filename_component(_fname "${src}" NAME)
+	list(FIND _ANDROID_TEST_WHITELIST "${_fname}" _idx)
+	if(NOT _idx EQUAL -1)
+		list(APPEND LIBCORO_ANDROID_TEST_SOURCES "${src}")
+	endif()
+endforeach()
+message(STATUS "[android] Filtered test sources: ${LIBCORO_ANDROID_TEST_SOURCES}")
 
-if(LIBCORO_FEATURE_NETWORKING)
-	list(APPEND LIBCORO_TEST_SOURCES
-		${LIBCORO_TEST_DIR}/net/test_ip_address.cpp
-		${LIBCORO_TEST_DIR}/net/test_dns_resolver.cpp
-		${LIBCORO_TEST_DIR}/net/test_tcp_server.cpp
-		${LIBCORO_TEST_DIR}/net/test_tls_server.cpp
-		${LIBCORO_TEST_DIR}/net/test_udp_peers.cpp
-		${LIBCORO_TEST_DIR}/test_io_scheduler.cpp
-		${LIBCORO_TEST_DIR}/bench.cpp
-	)
-	list(APPEND LIBCORO_TEST_SOURCES ${LIBCORO_TEST_DIR}/test_when_any.cpp)
-endif()
-
-list(TRANSFORM LIBCORO_TEST_SOURCES PREPEND "") # no-op to ensure list exists
-target_sources(coroTest PRIVATE ${LIBCORO_TEST_SOURCES}
-	${LIBCORO_TEST_DIR}/catch_amalgamated.cpp
-	${LIBCORO_TEST_DIR}/catch_extensions.cpp)
-
+target_sources(coroTest PRIVATE ${LIBCORO_ANDROID_TEST_SOURCES})
 target_include_directories(coroTest PRIVATE ${LIBCORO_TEST_DIR})
 target_link_libraries(coroTest PRIVATE libcoro ${ANDROID_LOG_LIB})
 target_compile_definitions(coroTest PRIVATE LIBCORO_FEATURE_NETWORKING LIBCORO_FEATURE_TLS)
