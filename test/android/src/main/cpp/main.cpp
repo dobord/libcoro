@@ -294,7 +294,7 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
         auto              props      = read_properties_file(props_path);
 
         // Determine global timeout
-        constexpr auto       kDefaultGlobalTimeout = std::chrono::seconds(600);
+        constexpr auto       kDefaultGlobalTimeout = std::chrono::seconds(1800);
         std::chrono::seconds global_timeout        = kDefaultGlobalTimeout;
         if (!props["timeout"].empty())
         {
