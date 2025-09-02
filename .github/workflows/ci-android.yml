@@ -198,31 +198,25 @@ jobs:
           } > coro_test_config.properties
           "$ADB" -s "$DEV" push coro_test_config.properties /data/local/tmp/coro_test_config.properties >/dev/null
           echo "Copy config into app sandbox (strict)"
-          APP_BASE=$("$ADB" -s "$DEV" shell run-as $PKG sh -c 'pwd' 2>/dev/null | tr -d '\r')
-          echo "App base dir: $APP_BASE"
-          APP_FILES="$APP_BASE/files"
-          # Attempt to create files dir if missing
-          "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d "$APP_FILES" ] || mkdir "$APP_FILES"' || true
-          # List base for diagnostics
-          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -ld "$APP_BASE"; ls -l "$APP_BASE"' || true
-          # First copy attempt
-          COPY_OK=0
-          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cp /data/local/tmp/coro_test_config.properties "$APP_FILES/coro_test_config.properties" 2>/dev/null || cat /data/local/tmp/coro_test_config.properties > "$APP_FILES/coro_test_config.properties"' && COPY_OK=1 || COPY_OK=0
-          if [ $COPY_OK -ne 1 ]; then
+          # Ensure internal files dir exists (relative path under run-as CWD)
+          "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d files ] || mkdir files' || true
+          # Diagnostics: list base dir
+          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'pwd; ls -ld .; ls -l .' || true
+          # First copy attempt (cp or fallback to cat)
+          if ! "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cp /data/local/tmp/coro_test_config.properties files/coro_test_config.properties 2>/dev/null || cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties'; then
             echo "First copy failed; relaunching activity to force dir creation and retry" >&2
             "$ADB" -s "$DEV" shell am start -n $PKG/.MainActivity >/dev/null 2>&1 || true
             sleep 5
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d "$APP_FILES" ] || mkdir "$APP_FILES"' || true
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cp /data/local/tmp/coro_test_config.properties "$APP_FILES/coro_test_config.properties" 2>/dev/null || cat /data/local/tmp/coro_test_config.properties > "$APP_FILES/coro_test_config.properties"' && COPY_OK=1 || COPY_OK=0
-          fi
-          if [ $COPY_OK -ne 1 ]; then
-            echo "Config copy failed after retry" >&2
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l "$APP_BASE" || true'
-            exit 1
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d files ] || mkdir files' || true
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cp /data/local/tmp/coro_test_config.properties files/coro_test_config.properties 2>/dev/null || cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties' || {
+              echo "Config copy failed after retry" >&2
+              "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l .' || true
+              exit 1
+            }
           fi
           # Verify presence and minimal content
-          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'test -s "$APP_FILES/coro_test_config.properties"' || { echo "Config file missing or empty" >&2; exit 1; }
-          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l "$APP_FILES/coro_test_config.properties"; head -n 5 "$APP_FILES/coro_test_config.properties"' || true
+          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'test -s files/coro_test_config.properties' || { echo "Config file missing or empty" >&2; exit 1; }
+          "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l files/coro_test_config.properties; head -n 5 files/coro_test_config.properties' || true
           echo "Force-stop and relaunch for tests"
           "$ADB" -s "$DEV" shell am force-stop $PKG || true
           "$ADB" -s "$DEV" logcat -c || true
