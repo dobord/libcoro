@@ -50,8 +50,16 @@ set(LIBCORO_COLLECT_TEST_SOURCES_ONLY ON)
 include(${LIBCORO_TEST_DIR}/CMakeLists.txt) # populates LIBCORO_TEST_SOURCE_FILES
 message(STATUS "[android] Imported test sources: ${LIBCORO_TEST_SOURCE_FILES}")
 
-# Use all collected test sources (full suite)
-set(LIBCORO_ANDROID_TEST_SOURCES ${LIBCORO_TEST_SOURCE_FILES})
+# Normalize relative test source paths to absolute (they are relative to test dir in original list)
+set(_NORMALIZED_TEST_SOURCES)
+foreach(_src IN LISTS LIBCORO_TEST_SOURCE_FILES)
+	if(IS_ABSOLUTE "${_src}")
+		list(APPEND _NORMALIZED_TEST_SOURCES "${_src}")
+	else()
+		list(APPEND _NORMALIZED_TEST_SOURCES "${LIBCORO_TEST_DIR}/${_src}")
+	endif()
+endforeach()
+set(LIBCORO_ANDROID_TEST_SOURCES ${_NORMALIZED_TEST_SOURCES})
 message(STATUS "[android] Using full test source set (${LIBCORO_ANDROID_TEST_SOURCES})")
 
 target_sources(coroTest PRIVATE ${LIBCORO_ANDROID_TEST_SOURCES})
