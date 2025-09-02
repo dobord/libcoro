@@ -7,7 +7,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # --- Paths ---
 # PROJECT_SOURCE_DIR = test/android/src/main/cpp
 set(ANDROID_APP_ROOT "${PROJECT_SOURCE_DIR}/../../..")            # -> test/android
-get_filename_component(LIBCORO_DIR "${ANDROID_APP_ROOT}/.." REALPATH) # -> repo root (canonical)
+# From test/android go up two levels (android -> test -> repo root)
+get_filename_component(REPO_ROOT "${ANDROID_APP_ROOT}/../.." REALPATH)
+set(LIBCORO_DIR "${REPO_ROOT}")
+message(STATUS "[android] ANDROID_APP_ROOT=${ANDROID_APP_ROOT}")
+message(STATUS "[android] REPO_ROOT=${REPO_ROOT}")
 message(STATUS "[android] LIBCORO_DIR=${LIBCORO_DIR}")
 
 # --- OpenSSL prebuilts integration ---
