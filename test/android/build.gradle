@@ -1,6 +1,17 @@
 plugins {
     id 'com.android.application'
 }
+
+// Allow CI to override output build directory: -PcustomBuildDir=build-x86_64
+def customBuildDir = project.findProperty('customBuildDir')
+if (customBuildDir) {
+    buildDir = file(customBuildDir)
+    println "[android-ci] Using custom buildDir=${buildDir}"
+}
+
+// Allow CI to restrict build to a single ABI: -PciAbi=x86_64
+def ciAbi = project.findProperty('ciAbi')
+
 android {
     namespace "com.example.libcorotest"
     compileSdk = 34
@@ -16,8 +27,13 @@ android {
             }
         }
         ndk {
-            // Build and package native libs for all common ABIs
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+            if (ciAbi) {
+                abiFilters ciAbi
+                println "[android-ci] Restricting ABI to ${ciAbi}"
+            } else {
+                // Default multi-ABI build when not on CI single-ABI matrix
+                abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+            }
         }
     }
     buildTypes {
