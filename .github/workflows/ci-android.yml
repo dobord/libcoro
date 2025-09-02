@@ -38,9 +38,10 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             ~/.android/build-cache
-            external/libcoro/test/android/.cxx
-            external/libcoro/test/android/.gradle
-          key: gradle-${{ runner.os }}-${{ matrix.abi }}-${{ hashFiles('external/libcoro/test/android/**/*.gradle*','external/libcoro/test/android/gradle.properties') }}
+            test/android/.cxx
+            test/android/.gradle
+            test/android/build-${{ matrix.abi }}
+          key: gradle-${{ runner.os }}-${{ matrix.abi }}-${{ hashFiles('test/android/**/*.gradle*','test/android/gradle.properties') }}
           restore-keys: |
             gradle-${{ runner.os }}-${{ matrix.abi }}-
             gradle-${{ runner.os }}-
@@ -51,19 +52,29 @@ jobs:
 
       - name: Build debug APK (single ABI)
         working-directory: test/android
+        env:
+          ANDROID_MATRIX_ABI: ${{ matrix.abi }}
         run: |
           echo "Building for ABI: ${{ matrix.abi }}"
-          gradle clean assembleDebug -Pandroid.injected.build.abi=${{ matrix.abi }} --stacktrace --no-daemon
-          echo "Produced APKs:" && ls -la build/outputs/apk/debug || true
+          # Use per-ABI build directory (Gradle local property override via env + dir move)
+          export GRADLE_USER_HOME="$PWD/.gradle"
+          BUILD_DIR="build-${{ matrix.abi }}"
+          rm -f local.properties
+          printf 'android.injected.build.abi=%s\n' '${{ matrix.abi }}' >> local.properties
+          # Run build
+          gradle clean assembleDebug --stacktrace --no-daemon -Pandroid.injected.build.abi='${{ matrix.abi }}' -Pandroid.buildDir=$BUILD_DIR
+          ls -la "$BUILD_DIR/outputs/apk/debug" || true
           echo "Verify native lib for ABI present" || true
-          find build -type f -path "*${{ matrix.abi }}*" -name "*.so" | head -n 20 || true
+          find "$BUILD_DIR" -type f -path "*${{ matrix.abi }}*" -name "*.so" | head -n 20 || true
 
       - name: Upload APK artifact (per ABI)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ matrix.abi }}
-          path: test/android/build/outputs/apk/debug/*.apk
+          path: |
+            test/android/build-${{ matrix.abi }}/outputs/apk/debug/*.apk
+            test/android/build/outputs/apk/debug/*.apk
 
       - name: Install emulator runtime dependencies
         if: matrix.abi == 'x86_64'
@@ -133,7 +144,7 @@ jobs:
           set -euo pipefail
           ADB="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/platform-tools/adb"
           DEV=$("$ADB" devices | awk '/emulator-/{print $1; exit}')
-          APK=$(ls test/android/build/outputs/apk/debug/*.apk | head -n1 || true)
+          APK=$(ls test/android/build-${{ matrix.abi }}/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || ls test/android/build/outputs/apk/debug/*.apk 2>/dev/null | head -n1 || true)
           [ -n "$DEV" ] || { echo "No device" >&2; exit 1; }
           [ -n "$APK" ] || { echo "APK missing" >&2; exit 1; }
           echo "Install attempts..."
@@ -186,5 +197,6 @@ jobs:
           name: emulator-logs
           path: |
             emulator.log
+            test/android/build-${{ matrix.abi }}/outputs/apk/debug/*.apk
             test/android/build/outputs/apk/debug/*.apk
             libcoro-tests.log
