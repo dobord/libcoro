@@ -5,17 +5,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
-    name: Build (${{ matrix.abi }})${{ matrix.abi == 'x86_64' && ' + test' || '' }}
-    runs-on: ubuntu-22.04
+  ci-android:
+    name: ci-android-(${{ matrix.abi }})${{ matrix.abi == 'x86_64' && '+test' || '' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
         abi: [arm64-v8a, armeabi-v7a, x86, x86_64]
     env:
-      TEST_FILTER: "[event],[generator],[latch],[mutex],[queue],[semaphore] ~[condition_variable]"
-      TEST_TIMEOUT: "600"
+      TEST_FILTER: ""
+      TEST_TIMEOUT: "1200"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
