@@ -173,13 +173,20 @@ jobs:
           done
           [ "$PM_READY" -eq 1 ] || { echo "Package manager not ready" >&2; exit 1; }
           echo "Probing storage readiness (/sdcard)..."
+          set +e
           STORAGE_READY=0
           for i in $(seq 1 90); do
             "$ADB" -s "$DEV" shell 'echo 42 > /sdcard/ci_probe 2>/dev/null' >/dev/null 2>&1
-            "$ADB" -s "$DEV" shell 'cat /sdcard/ci_probe' 2>/dev/null | grep -q '^42$' && { STORAGE_READY=1; break; }
+            "$ADB" -s "$DEV" shell 'cat /sdcard/ci_probe' 2>/dev/null | grep -q '^42$'
+            if [ $? -eq 0 ]; then STORAGE_READY=1; break; fi
             sleep 2
           done
-          [ "$STORAGE_READY" -eq 1 ] || echo "Storage not fully ready (continuing)" >&2
+          set -e
+          if [ "$STORAGE_READY" -ne 1 ]; then
+            echo "Storage not fully ready (continuing)" >&2
+            "$ADB" -s "$DEV" shell ls -ld /sdcard 2>/dev/null || true
+            "$ADB" -s "$DEV" shell df -h /sdcard 2>/dev/null || true
+          fi
           PKG=com.example.libcorotest
           echo "Initial launch to create internal storage dir..."
           "$ADB" -s "$DEV" shell am start -n $PKG/.MainActivity >/dev/null 2>&1 || true
