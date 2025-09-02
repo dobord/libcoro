@@ -4,29 +4,30 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # JNI not required directly here: JNIEXPORT functions are declared manually.
 
+# --- Paths ---
+# PROJECT_SOURCE_DIR = test/android/src/main/cpp
+set(ANDROID_APP_ROOT "${PROJECT_SOURCE_DIR}/../../..")            # -> test/android
+get_filename_component(LIBCORO_DIR "${ANDROID_APP_ROOT}/.." ABSOLUTE) # -> repo root
+
 # --- OpenSSL prebuilts integration ---
-# Expect output of build_openssl.sh in external/openssl/<ABI>
+# build_openssl.sh installs into test/android/external/openssl/<ABI>
 if(DEFINED ANDROID_ABI)
-	set(_OPENSSL_CANDIDATE "${PROJECT_SOURCE_DIR}/../../../../external/openssl/${ANDROID_ABI}")
+	set(_OPENSSL_CANDIDATE "${ANDROID_APP_ROOT}/external/openssl/${ANDROID_ABI}")
 	if(EXISTS "${_OPENSSL_CANDIDATE}/lib/libssl.a")
-		message(STATUS "Using prebuilt OpenSSL in ${_OPENSSL_CANDIDATE}")
-		# Hint both config & module find modes
+	message(STATUS "Using prebuilt OpenSSL in ${_OPENSSL_CANDIDATE}")
 		set(OPENSSL_ROOT_DIR "${_OPENSSL_CANDIDATE}" CACHE PATH "")
 		set(OPENSSL_USE_STATIC_LIBS ON CACHE BOOL "")
-		# Predefine variables FindOpenSSL.cmake looks for (defensive for cross-compiling)
 		set(OPENSSL_INCLUDE_DIR "${_OPENSSL_CANDIDATE}/include" CACHE PATH "")
 		set(OPENSSL_CRYPTO_LIBRARY "${_OPENSSL_CANDIDATE}/lib/libcrypto.a" CACHE FILEPATH "")
 		set(OPENSSL_SSL_LIBRARY "${_OPENSSL_CANDIDATE}/lib/libssl.a" CACHE FILEPATH "")
 		set(OPENSSL_LIBRARIES "${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}" CACHE STRING "")
-		# Allow package config lookup
 		list(PREPEND CMAKE_PREFIX_PATH "${_OPENSSL_CANDIDATE}")
 	else()
 		message(WARNING "Prebuilt OpenSSL for ABI ${ANDROID_ABI} not found at ${_OPENSSL_CANDIDATE}. Run build_openssl.sh first.")
 	endif()
 endif()
 
-# Path to libcoro project root (repository root, 4 levels up)
-set(LIBCORO_DIR ${PROJECT_SOURCE_DIR}/../../../../)
+# Validate libcoro root
 if(NOT EXISTS ${LIBCORO_DIR}/CMakeLists.txt)
 	message(FATAL_ERROR "libcoro root CMakeLists.txt not found at ${LIBCORO_DIR}.")
 endif()
