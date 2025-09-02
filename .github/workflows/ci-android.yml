@@ -6,7 +6,7 @@ on:
 
 jobs:
   ci-android:
-    name: ci-android-(${{ matrix.abi }})${{ matrix.abi == 'x86_64' && '+test' || '' }}
+    name: ci-android-${{ matrix.abi }}${{ matrix.abi == 'x86_64' && '+test' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     strategy:
