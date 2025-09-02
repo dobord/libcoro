@@ -170,10 +170,13 @@ jobs:
             printf 'timeout=%s\n' "${TEST_TIMEOUT}";
           } > coro_test_config.properties
           "$ADB" -s "$DEV" push coro_test_config.properties /data/local/tmp/coro_test_config.properties >/dev/null
-          # Create app files dir and place config atomically
-          "$ADB" -s "$DEV" shell run-as com.example.libcorotest sh -c 'set -e; mkdir -p files; cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties; ls -l files/coro_test_config.properties'
-          # Show first line for debug
-          "$ADB" -s "$DEV" shell run-as com.example.libcorotest head -n 5 files/coro_test_config.properties || true
+          # Place config using absolute internal storage path (relative path may map to / read-only)
+            PKG=com.example.libcorotest
+            APP_FILES="/data/data/$PKG/files"
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'set -e; mkdir -p /data/data/$PKG/files; cat /data/local/tmp/coro_test_config.properties > /data/data/$PKG/files/coro_test_config.properties'
+            # Verify
+            "$ADB" -s "$DEV" shell run-as $PKG ls -l /data/data/$PKG/files/coro_test_config.properties || true
+            "$ADB" -s "$DEV" shell run-as $PKG head -n 5 /data/data/$PKG/files/coro_test_config.properties || true
           "$ADB" -s "$DEV" logcat -c || true
           "$ADB" -s "$DEV" shell am start -n com.example.libcorotest/.MainActivity
           TIMEOUT=3600
