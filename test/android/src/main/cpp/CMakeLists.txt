@@ -7,7 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # --- Paths ---
 # PROJECT_SOURCE_DIR = test/android/src/main/cpp
 set(ANDROID_APP_ROOT "${PROJECT_SOURCE_DIR}/../../..")            # -> test/android
-get_filename_component(LIBCORO_DIR "${ANDROID_APP_ROOT}/.." ABSOLUTE) # -> repo root
+get_filename_component(LIBCORO_DIR "${ANDROID_APP_ROOT}/.." REALPATH) # -> repo root (canonical)
+message(STATUS "[android] LIBCORO_DIR=${LIBCORO_DIR}")
 
 # --- OpenSSL prebuilts integration ---
 # build_openssl.sh installs into test/android/external/openssl/<ABI>
@@ -41,21 +42,15 @@ find_library(ANDROID_LOG_LIB log)
 
 # Collect libcoro test sources (without their own main.cpp which defines Catch2 main)
 set(LIBCORO_TEST_DIR ${LIBCORO_DIR}/test)
+message(STATUS "[android] LIBCORO_TEST_DIR=${LIBCORO_TEST_DIR}")
+# Minimal subset of tests matching CI filter tags: event,generator,latch,mutex,queue,semaphore
 set(LIBCORO_TEST_SOURCES
-	${LIBCORO_TEST_DIR}/test_condition_variable.cpp
 	${LIBCORO_TEST_DIR}/test_event.cpp
 	${LIBCORO_TEST_DIR}/test_generator.cpp
 	${LIBCORO_TEST_DIR}/test_latch.cpp
 	${LIBCORO_TEST_DIR}/test_mutex.cpp
 	${LIBCORO_TEST_DIR}/test_queue.cpp
-	${LIBCORO_TEST_DIR}/test_ring_buffer.cpp
 	${LIBCORO_TEST_DIR}/test_semaphore.cpp
-	${LIBCORO_TEST_DIR}/test_shared_mutex.cpp
-	${LIBCORO_TEST_DIR}/test_sync_wait.cpp
-	${LIBCORO_TEST_DIR}/test_task_container.cpp
-	${LIBCORO_TEST_DIR}/test_task.cpp
-	${LIBCORO_TEST_DIR}/test_thread_pool.cpp
-	${LIBCORO_TEST_DIR}/test_when_all.cpp
 )
 
 if(LIBCORO_FEATURE_NETWORKING)
@@ -71,6 +66,7 @@ if(LIBCORO_FEATURE_NETWORKING)
 	list(APPEND LIBCORO_TEST_SOURCES ${LIBCORO_TEST_DIR}/test_when_any.cpp)
 endif()
 
+list(TRANSFORM LIBCORO_TEST_SOURCES PREPEND "") # no-op to ensure list exists
 target_sources(coroTest PRIVATE ${LIBCORO_TEST_SOURCES}
 	${LIBCORO_TEST_DIR}/catch_amalgamated.cpp
 	${LIBCORO_TEST_DIR}/catch_extensions.cpp)
