@@ -165,23 +165,28 @@ jobs:
             echo "$OUT"; echo "$OUT" | grep -q "Success" && break
             sleep 5
           done
+          PKG=com.example.libcorotest
+          echo "Initial launch to create internal storage dir..."
+          "$ADB" -s "$DEV" shell am start -n $PKG/.MainActivity >/dev/null 2>&1 || true
+          sleep 5
           echo "Prepare test config"
           {
             [ -n "${TEST_FILTER}" ] && printf 'filter=%s\n' "${TEST_FILTER}" || true
             printf 'timeout=%s\n' "${TEST_TIMEOUT}";
           } > coro_test_config.properties
           "$ADB" -s "$DEV" push coro_test_config.properties /data/local/tmp/coro_test_config.properties >/dev/null
-          # Place config: detect app data dir via run-as pwd and write into files/
-            PKG=com.example.libcorotest
-            BASE_DIR=$("$ADB" -s "$DEV" shell run-as $PKG sh -c 'pwd' 2>/dev/null | tr -d '\r')
-            [ -n "$BASE_DIR" ] || { echo "Failed to resolve base dir for $PKG" >&2; }
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d files ] || mkdir files || true'
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties'
-            # Verify
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l files/coro_test_config.properties' || true
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'head -n 5 files/coro_test_config.properties' || true
+          echo "Copy config into app sandbox"
+          # Try copy; if files dir missing (rare), log and continue (will fallback to default settings)
+          if "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls files >/dev/null 2>&1'; then
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties' || echo "Copy failed" >&2
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l files/coro_test_config.properties; head -n 5 files/coro_test_config.properties' || true
+          else
+            echo "files/ dir not present; config copy skipped" >&2
+          fi
+          echo "Force-stop and relaunch for tests"
+          "$ADB" -s "$DEV" shell am force-stop $PKG || true
           "$ADB" -s "$DEV" logcat -c || true
-          "$ADB" -s "$DEV" shell am start -n com.example.libcorotest/.MainActivity
+          "$ADB" -s "$DEV" shell am start -n $PKG/.MainActivity
           TIMEOUT=3600
           while [ $TIMEOUT -gt 0 ]; do
             amstack=$("$ADB" -s "$DEV" shell dumpsys activity activities | grep -E "Activities=.*com.example.libcorotest" || true)
