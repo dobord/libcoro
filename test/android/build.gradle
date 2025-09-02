@@ -3,11 +3,11 @@ plugins {
 }
 android {
     namespace "com.example.libcorotest"
-    compileSdkVersion 34
+    compileSdk = 34
     defaultConfig {
         applicationId "com.example.libcorotest"
-        minSdkVersion 24
-        targetSdkVersion 34
+        minSdk = 24
+        targetSdk = 34
         versionCode 1
         versionName "1.0"
         externalNativeBuild {
