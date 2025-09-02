@@ -67,13 +67,9 @@ jobs:
           ANDROID_MATRIX_ABI: ${{ matrix.abi }}
         run: |
           echo "Building for ABI: ${{ matrix.abi }}"
-          # Use per-ABI build directory (Gradle local property override via env + dir move)
           export GRADLE_USER_HOME="$PWD/.gradle"
           BUILD_DIR="build-${{ matrix.abi }}"
-          rm -f local.properties
-          printf 'android.injected.build.abi=%s\n' '${{ matrix.abi }}' >> local.properties
-          # Run build
-          gradle clean assembleDebug --stacktrace --no-daemon -Pandroid.injected.build.abi='${{ matrix.abi }}' -Pandroid.buildDir=$BUILD_DIR
+          gradle clean assembleDebug --stacktrace --no-daemon -PciAbi='${{ matrix.abi }}' -PcustomBuildDir=$BUILD_DIR
           ls -la "$BUILD_DIR/outputs/apk/debug" || true
           echo "Verify native lib for ABI present" || true
           find "$BUILD_DIR" -type f -path "*${{ matrix.abi }}*" -name "*.so" | head -n 20 || true
