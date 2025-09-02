@@ -104,7 +104,8 @@ jobs:
           export ANDROID_AVD_HOME="$HOME/.android/avd"
           export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           export EMU_BIN="$ANDROID_SDK_ROOT/emulator/emulator"
-          mkdir -p "$ANDROID_AVD_HOME"
+          # Avoid -p: create AVD home only if missing
+          [ -d "$ANDROID_AVD_HOME" ] || mkdir "$ANDROID_AVD_HOME"
           sdkmanager --channel=0 --install "emulator" "platform-tools" > /dev/null || true
           sdkmanager --channel=0 --install "system-images;android-30;default;x86_64" > /dev/null
           avdmanager delete avd -n test || true
@@ -170,13 +171,15 @@ jobs:
             printf 'timeout=%s\n' "${TEST_TIMEOUT}";
           } > coro_test_config.properties
           "$ADB" -s "$DEV" push coro_test_config.properties /data/local/tmp/coro_test_config.properties >/dev/null
-          # Place config using absolute internal storage path (relative path may map to / read-only)
+          # Place config: detect app data dir via run-as pwd and write into files/
             PKG=com.example.libcorotest
-            APP_FILES="/data/data/$PKG/files"
-            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'set -e; mkdir -p /data/data/$PKG/files; cat /data/local/tmp/coro_test_config.properties > /data/data/$PKG/files/coro_test_config.properties'
+            BASE_DIR=$("$ADB" -s "$DEV" shell run-as $PKG sh -c 'pwd' 2>/dev/null | tr -d '\r')
+            [ -n "$BASE_DIR" ] || { echo "Failed to resolve base dir for $PKG" >&2; }
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c '[ -d files ] || mkdir files || true'
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties'
             # Verify
-            "$ADB" -s "$DEV" shell run-as $PKG ls -l /data/data/$PKG/files/coro_test_config.properties || true
-            "$ADB" -s "$DEV" shell run-as $PKG head -n 5 /data/data/$PKG/files/coro_test_config.properties || true
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l files/coro_test_config.properties' || true
+            "$ADB" -s "$DEV" shell run-as $PKG sh -c 'head -n 5 files/coro_test_config.properties' || true
           "$ADB" -s "$DEV" logcat -c || true
           "$ADB" -s "$DEV" shell am start -n com.example.libcorotest/.MainActivity
           TIMEOUT=3600
