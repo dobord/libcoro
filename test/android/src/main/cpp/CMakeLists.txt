@@ -25,10 +25,10 @@ if(DEFINED ANDROID_ABI)
 	endif()
 endif()
 
-# Path to submodule (fixed relative path)
-set(LIBCORO_DIR ${PROJECT_SOURCE_DIR}/../../../../external/libcoro)
+# Path to libcoro project root (repository root, 4 levels up)
+set(LIBCORO_DIR ${PROJECT_SOURCE_DIR}/../../../../)
 if(NOT EXISTS ${LIBCORO_DIR}/CMakeLists.txt)
-	message(FATAL_ERROR "libcoro submodule not found at ${LIBCORO_DIR}. Ensure 'git submodule init && git submodule update' was run.")
+	message(FATAL_ERROR "libcoro root CMakeLists.txt not found at ${LIBCORO_DIR}.")
 endif()
 
 add_library(coroTest SHARED main.cpp)

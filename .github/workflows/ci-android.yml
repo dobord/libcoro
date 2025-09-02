@@ -50,6 +50,17 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null || true
 
+      - name: Build OpenSSL (if missing for ABI)
+        working-directory: test/android
+        run: |
+          ABI="${{ matrix.abi }}"
+          ROOT="$PWD"
+          OUT_DIR="external/openssl/$ABI/lib"
+          if [ -f "$OUT_DIR/libssl.a" ] && [ -f "$OUT_DIR/libcrypto.a" ]; then
+            echo "OpenSSL already present for $ABI"; exit 0; fi
+          echo "Building OpenSSL for $ABI";
+          bash scripts/build_openssl.sh --abis "$ABI" --api 24
+
       - name: Build debug APK (single ABI)
         working-directory: test/android
         env:
