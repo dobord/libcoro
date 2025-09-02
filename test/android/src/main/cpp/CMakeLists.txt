@@ -50,24 +50,9 @@ set(LIBCORO_COLLECT_TEST_SOURCES_ONLY ON)
 include(${LIBCORO_TEST_DIR}/CMakeLists.txt) # populates LIBCORO_TEST_SOURCE_FILES
 message(STATUS "[android] Imported test sources: ${LIBCORO_TEST_SOURCE_FILES}")
 
-# Whitelist subset relevant for current CI filter to reduce build time
-set(_ANDROID_TEST_WHITELIST
-	test_event.cpp
-	test_generator.cpp
-	test_latch.cpp
-	test_mutex.cpp
-	test_queue.cpp
-	test_semaphore.cpp
-)
-set(LIBCORO_ANDROID_TEST_SOURCES)
-foreach(src IN LISTS LIBCORO_TEST_SOURCE_FILES)
-	get_filename_component(_fname "${src}" NAME)
-	list(FIND _ANDROID_TEST_WHITELIST "${_fname}" _idx)
-	if(NOT _idx EQUAL -1)
-		list(APPEND LIBCORO_ANDROID_TEST_SOURCES "${src}")
-	endif()
-endforeach()
-message(STATUS "[android] Filtered test sources: ${LIBCORO_ANDROID_TEST_SOURCES}")
+# Use all collected test sources (full suite)
+set(LIBCORO_ANDROID_TEST_SOURCES ${LIBCORO_TEST_SOURCE_FILES})
+message(STATUS "[android] Using full test source set (${LIBCORO_ANDROID_TEST_SOURCES})")
 
 target_sources(coroTest PRIVATE ${LIBCORO_ANDROID_TEST_SOURCES})
 target_include_directories(coroTest PRIVATE ${LIBCORO_TEST_DIR})
