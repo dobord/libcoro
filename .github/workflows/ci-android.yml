@@ -50,6 +50,10 @@ jobs:
         run: |
           yes | sdkmanager --licenses > /dev/null || true
 
+      - name: Install CMake (required for externalNativeBuild)
+        run: |
+          sdkmanager --install "cmake;3.22.1" > /dev/null
+
       - name: Build OpenSSL (if missing for ABI)
         working-directory: test/android
         run: |

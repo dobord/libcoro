@@ -45,6 +45,7 @@ android {
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
         }
     }
     // Build a single APK that includes all filtered ABIs
