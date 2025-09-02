@@ -50,7 +50,7 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
 
       - name: Build debug APK (single ABI)
-        working-directory: external/libcoro/test/android
+        working-directory: test/android
         run: |
           echo "Building for ABI: ${{ matrix.abi }}"
           gradle clean assembleDebug -Pandroid.injected.build.abi=${{ matrix.abi }} --stacktrace --no-daemon
@@ -63,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ matrix.abi }}
-          path: external/libcoro/test/android/build/outputs/apk/debug/*.apk
+          path: test/android/build/outputs/apk/debug/*.apk
 
       - name: Install emulator runtime dependencies
         if: matrix.abi == 'x86_64'
@@ -133,7 +133,7 @@ jobs:
           set -euo pipefail
           ADB="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/platform-tools/adb"
           DEV=$("$ADB" devices | awk '/emulator-/{print $1; exit}')
-          APK=$(ls external/libcoro/test/android/build/outputs/apk/debug/*.apk | head -n1 || true)
+          APK=$(ls test/android/build/outputs/apk/debug/*.apk | head -n1 || true)
           [ -n "$DEV" ] || { echo "No device" >&2; exit 1; }
           [ -n "$APK" ] || { echo "APK missing" >&2; exit 1; }
           echo "Install attempts..."
@@ -186,5 +186,5 @@ jobs:
           name: emulator-logs
           path: |
             emulator.log
-            external/libcoro/test/android/build/outputs/apk/debug/*.apk
+            test/android/build/outputs/apk/debug/*.apk
             libcoro-tests.log
