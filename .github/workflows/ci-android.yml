@@ -205,7 +205,7 @@ jobs:
           if "$ADB" -s "$DEV" shell "run-as $PKG test -d . && run-as $PKG test -w ." 2>/dev/null; then
             echo "App sandbox writable, attempting config copy..."
             "$ADB" -s "$DEV" shell run-as $PKG sh -c "test -d files || mkdir files" 2>/dev/null || true
-            if "$ADB" -s "$DEV" shell run-as $PKG sh -c "cat /data/local/tmp/coro_test_config.properties > files/coro_test_config.properties" 2>/dev/null; then
+            if "$ADB" -s "$DEV" shell run-as $PKG cp /data/local/tmp/coro_test_config.properties files/coro_test_config.properties 2>/dev/null; then
               COPY_OK=1
               echo "Config copied successfully"
               "$ADB" -s "$DEV" shell run-as $PKG sh -c 'ls -l files/coro_test_config.properties; head -n 3 files/coro_test_config.properties' || true
