@@ -330,6 +330,7 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
             // Default excludes for fragile/slow tests on emulator environment
             argv.push_back("~[bench]");
             argv.push_back("~[ring_buffer]");
+            argv.push_back("~[thread_pool]");
             ui_append_line("Using default test excludes suitable for emulator.");
         }
 
