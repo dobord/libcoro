@@ -294,7 +294,7 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
         auto              props      = read_properties_file(props_path);
 
         // Determine global timeout
-        constexpr auto       kDefaultGlobalTimeout = std::chrono::seconds(1800);
+        constexpr auto       kDefaultGlobalTimeout = std::chrono::seconds(600); // 10 minutes for emulator
         std::chrono::seconds global_timeout        = kDefaultGlobalTimeout;
         if (!props["timeout"].empty())
         {
@@ -331,6 +331,11 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
             argv.push_back("~[bench]");
             argv.push_back("~[ring_buffer]");
             argv.push_back("~[thread_pool]");
+            argv.push_back("~[tcp_server]");
+            argv.push_back("~[tls_server]");
+            argv.push_back("~[dns]");
+            argv.push_back("~*net:*"); // exclude all net:: tests
+            argv.push_back("~udp*");   // exclude UDP tests
             ui_append_line("Using default test excludes suitable for emulator.");
         }
 
