@@ -13,7 +13,6 @@
 #include <fstream>
 #include <future>
 #include <iostream>
-#include <map>
 #include <mutex>
 #include <optional>
 #include <pthread.h>
@@ -345,8 +344,9 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
             argv.push_back("~[tcp_server]");
             argv.push_back("~[tls_server]");
             argv.push_back("~[dns]");
-            argv.push_back("~*net:*"); // exclude all net:: tests
-            argv.push_back("~udp*");   // exclude UDP tests
+            argv.push_back("~*net::*");      // exclude all net:: tests
+            argv.push_back("~*udp*");        // exclude UDP tests
+            argv.push_back("~*ip_address*"); // exclude ip_address tests specifically
             ui_append_line("Using default test excludes suitable for emulator.");
         }
 
