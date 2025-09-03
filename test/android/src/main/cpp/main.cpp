@@ -15,26 +15,8 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
-#includ else
-{
-    // Default excludes for fragile/slow tests on emulator environment
-    argv.push_back("~[benchmark]"); // exclude benchmark tests
-    argv.push_back("~[bench]");
-    argv.push_back("~[semaphore]");    // exclude slow semaphore tests
-    argv.push_back("~[io_scheduler]"); // exclude slow io_scheduler tests
-    argv.push_back("~[ring_buffer]");
-    argv.push_back("~[thread_pool]");
-    argv.push_back("~[tcp_server]");
-    argv.push_back("~[tls_server]");
-    argv.push_back("~[dns]");
-    argv.push_back("~*net::*");      // exclude all net:: tests
-    argv.push_back("~*udp*");        // exclude UDP tests
-    argv.push_back("~*ip_address*"); // exclude ip_address tests specifically
-    argv.push_back("~*wait_for*");   // exclude timing-sensitive condition_variable tests
-    argv.push_back("~*wait_until*"); // exclude timing-sensitive condition_variable tests
-    ui_append_line("Using default test excludes suitable for emulator.");
-}
-clude<sstream>
+#include <pthread.h>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -50,7 +32,7 @@ clude<sstream>
 #define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, fmt, ##__VA_ARGS__)
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, fmt, ##__VA_ARGS__)
 
-    using namespace coro;
+using namespace coro;
 
 // JNI callback holder to append text into UI TextView.
 struct UiAppender
@@ -368,6 +350,8 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
             argv.push_back("~*net::*");      // exclude all net:: tests
             argv.push_back("~*udp*");        // exclude UDP tests
             argv.push_back("~*ip_address*"); // exclude ip_address tests specifically
+            argv.push_back("~*wait_for*");   // exclude timing-sensitive condition_variable tests
+            argv.push_back("~*wait_until*"); // exclude timing-sensitive condition_variable tests
             ui_append_line("Using default test excludes suitable for emulator.");
         }
 
