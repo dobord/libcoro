@@ -213,7 +213,7 @@ jobs:
           fi
           if [ $COPY_OK -ne 1 ]; then
             echo "Config copy failed or sandbox not writable - using default test settings" >&2
-            echo "Tests will run with: filter=* (all tests), timeout=1200s"
+            echo "Tests will run with: filter=\"${TEST_FILTER:-*}\", timeout=${TEST_TIMEOUT}s"
           fi
           echo "Force-stop and relaunch for tests"
           "$ADB" -s "$DEV" shell am force-stop $PKG || true

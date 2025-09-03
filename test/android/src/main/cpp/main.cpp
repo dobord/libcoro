@@ -286,12 +286,23 @@ static int run_all_tests_with_output(const std::string& files_dir) noexcept
     int code = 2; // non-zero by default
     try
     {
-        // Allow override via properties file located in files_dir
+        // Allow override via properties file located in files_dir or /data/local/tmp
         // File format (properties):
         //   filter=<Catch2 test specs separated by spaces>
         //   timeout=<seconds>
         const std::string props_path = files_dir + "/coro_test_config.properties";
         auto              props      = read_properties_file(props_path);
+
+        // If sandbox file not found, try system temp location as fallback
+        if (props.empty())
+        {
+            const std::string fallback_path = "/data/local/tmp/coro_test_config.properties";
+            props                           = read_properties_file(fallback_path);
+            if (!props.empty())
+            {
+                ui_append_line("Using fallback config from /data/local/tmp/");
+            }
+        }
 
         // Determine global timeout
         constexpr auto       kDefaultGlobalTimeout = std::chrono::seconds(600); // 10 minutes for emulator
