@@ -17,6 +17,7 @@ set(LIBCORO_TEST_SOURCE_FILES
     test_task_container.cpp
     test_task.cpp
     test_thread_pool.cpp
+    test_work_stealing_deque.cpp
     test_when_all.cpp
 
     catch_amalgamated.hpp catch_amalgamated.cpp

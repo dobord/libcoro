@@ -15,6 +15,11 @@
 #include <variant>
 #include <vector>
 
+#ifdef LIBCORO_EXPERIMENTAL_WORK_STEALING
+    #include "coro/detail/cache_pool.hpp"
+    #include "coro/detail/work_stealing_deque.hpp"
+#endif
+
 namespace coro
 {
 /**
@@ -31,6 +36,7 @@ class thread_pool : public std::enable_shared_from_this<thread_pool>
     {
         private_constructor() = default;
     };
+
 public:
     /**
      * A schedule operation is an awaitable type with a coroutine to resume the task scheduled on one of
@@ -246,6 +252,16 @@ private:
     std::condition_variable_any m_wait_cv;
     /// FIFO queue of tasks waiting to be executed.
     std::deque<std::coroutine_handle<>> m_queue;
+    /// Number of executor threads currently waiting on the condition variable.
+    std::atomic<std::size_t> m_waiters{0};
+
+#ifdef LIBCORO_EXPERIMENTAL_WORK_STEALING
+    // Shared allocator pool for deque chunks across all workers.
+    using ws_block_t = detail::work_stealing_deque::block;
+    detail::cache_pool<ws_block_t> m_cache_pool;
+    // One work-stealing deque per worker; owner-only push/pop bottom, thieves steal from top.
+    std::vector<std::unique_ptr<detail::work_stealing_deque>> m_deques;
+#endif
 
     /**
      * Each background thread runs from this function.

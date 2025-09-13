@@ -54,6 +54,7 @@ option(LIBCORO_CODE_COVERAGE         "Enable code coverage, tests must also be e
 option(LIBCORO_BUILD_EXAMPLES        "Build the examples, Default=ON." ON)
 option(LIBCORO_RUN_GITCONFIG         "Set the githooks directory to auto format and update the readme, Default=OFF." OFF)
 option(LIBCORO_BUILD_SHARED_LIBS     "Build shared libraries, Default=OFF." OFF)
+option(LIBCORO_EXPERIMENTAL_WORK_STEALING "Enable work-stealing thread_pool with shared cache-pool allocator (experimental), Default=OFF." OFF)
 
 # Set the githooks directory to auto format and update the readme.
 if (LIBCORO_RUN_GITCONFIG)
@@ -79,6 +80,7 @@ message(STATUS "LIBCORO_FEATURE_NETWORKING    = ${LIBCORO_FEATURE_NETWORKING}")
 message(STATUS "LIBCORO_FEATURE_TLS           = ${LIBCORO_FEATURE_TLS}")
 message(STATUS "LIBCORO_RUN_GITCONFIG         = ${LIBCORO_RUN_GITCONFIG}")
 message(STATUS "LIBCORO_BUILD_SHARED_LIBS     = ${LIBCORO_BUILD_SHARED_LIBS}")
+message(STATUS "LIBCORO_EXPERIMENTAL_WORK_STEALING = ${LIBCORO_EXPERIMENTAL_WORK_STEALING}")
 
 if(LIBCORO_EXTERNAL_DEPENDENCIES)
     if(LIBCORO_FEATURE_NETWORKING)
@@ -195,6 +197,10 @@ endif()
 
 add_library(${PROJECT_NAME} ${LIBCORO_SOURCE_FILES})
 set_target_properties(${PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX PREFIX "" VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+
+if(LIBCORO_EXPERIMENTAL_WORK_STEALING)
+    target_compile_definitions(${PROJECT_NAME} PUBLIC LIBCORO_EXPERIMENTAL_WORK_STEALING=1)
+endif()
 
 if(LIBCORO_ENABLE_ASAN)
     add_compile_options(-g -O0 -fno-omit-frame-pointer -fsanitize=address)
