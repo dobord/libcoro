@@ -233,4 +233,4 @@ jobs:
                     cd Release
                     # Tests define TSAN_OPTIONS and suppressions per-test in CTest when LIBCORO_ENABLE_TSAN=ON
                     # Run verbosely and serially (CTest will set RUN_SERIAL for TSAN).
-                    ctest --build-config Release -VV
+                    ctest --build-config Release -VV -j1
