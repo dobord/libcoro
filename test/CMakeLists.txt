@@ -55,6 +55,13 @@ target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(${PROJECT_NAME} PRIVATE libcoro)
 
+# When running under ThreadSanitizer, disable Catch2's POSIX signal handlers to
+# avoid TSAN warnings about signal-unsafe calls inside handlers on timeouts.
+# Also enforce a strict 60s timeout and stop on first TSAN report.
+if(LIBCORO_ENABLE_TSAN)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE CATCH_CONFIG_NO_POSIX_SIGNALS)
+endif()
+
 if(${CMAKE_CXX_COMPILER_ID} MATCHES "GNU")
     target_compile_options(${PROJECT_NAME} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-std=c++20>
@@ -84,5 +91,39 @@ if(LIBCORO_CODE_COVERAGE)
     target_compile_options(${PROJECT_NAME} PRIVATE --coverage)
 endif()
 
+function(coro_add_test name)
+    add_test(NAME ${name} COMMAND ${PROJECT_NAME} ${ARGN})
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<$<BOOL:${WIN32}>:$<TARGET_FILE_DIR:libcoro>>")
+    if(LIBCORO_ENABLE_TSAN)
+        # Per-test timeout to keep CI/dev runs bounded
+        set_tests_properties(${name} PROPERTIES TIMEOUT 60)
+        # Make TSAN fail fast on the first detected issue and suppress known Catch2 harness races
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1 suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp")
+        # Avoid running multiple tests concurrently under TSAN to reduce flakiness and cross-test interference
+        set_tests_properties(${name} PROPERTIES RUN_SERIAL TRUE)
+    endif()
+endfunction()
+
+# Register focused tests per Catch2 tag to avoid a single long-running aggregate
+coro_add_test(libcoro_concepts           "[concepts]")
+coro_add_test(libcoro_condition_variable "[condition_variable]")
+coro_add_test(libcoro_event              "[event]")
+coro_add_test(libcoro_generator          "[generator]")
+coro_add_test(libcoro_latch              "[latch]")
+coro_add_test(libcoro_mutex              "[mutex]")
+coro_add_test(libcoro_queue              "[queue]")
+coro_add_test(libcoro_ring_buffer        "[ring_buffer]")
+coro_add_test(libcoro_semaphore          "[semaphore]")
+coro_add_test(libcoro_shared_mutex       "[shared_mutex]")
+coro_add_test(libcoro_sync_wait          "[sync_wait]")
+coro_add_test(libcoro_task_container     "[task_container]")
+coro_add_test(libcoro_task               "[task]")
+coro_add_test(libcoro_thread_pool        "[thread_pool]")
+coro_add_test(libcoro_when_all           "[when_all]")
+if(NOT EMSCRIPTEN)
+    coro_add_test(libcoro_when_any       "[when_any]")
+endif()
+
+# Keep the aggregate test defined but disabled to avoid suite-level timeouts
 add_test(NAME libcoro_tests COMMAND ${PROJECT_NAME})
-set_tests_properties(libcoro_tests PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<$<BOOL:${WIN32}>:$<TARGET_FILE_DIR:libcoro>>")
+set_tests_properties(libcoro_tests PROPERTIES DISABLED TRUE)

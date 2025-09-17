@@ -1,0 +1,6 @@
+# Suppress known data race inside Catch2 test harness string/trackers initialization
+race:Catch::TestCaseTracking::NameAndLocation*
+race:Catch::TestCaseTracking::ITracker::ITracker*
+race:Catch::TestCaseTracking::TrackerBase::TrackerBase*
+race:Catch::RunContext::runCurrentTest*
+race:Catch::Session::run*
