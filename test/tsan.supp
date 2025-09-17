@@ -17,3 +17,11 @@ race:^Catch::TestCaseTracking::ITracker::ITracker
 race:^Catch::OutputRedirect::isActive\(\) const
 race:^Catch::OutputRedirect::deactivate\(\)
 race:^Catch::scopedDeactivate
+
+# Additional broad suppressions from repository root tsan.supp used by some CI runs
+# Keep them here so that CTest-provided TSAN_OPTIONS picks them up in all environments.
+race:Catch::TestCaseTracking::NameAndLocation*
+race:Catch::TestCaseTracking::ITracker::ITracker*
+race:Catch::TestCaseTracking::TrackerBase::TrackerBase*
+race:Catch::RunContext::runCurrentTest*
+race:Catch::Session::run*
