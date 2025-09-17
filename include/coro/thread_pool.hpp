@@ -1,6 +1,7 @@
 #pragma once
 
 #include "coro/concepts/range_of.hpp"
+#include "coro/detail/tsan.hpp"
 #include "coro/task.hpp"
 
 #include <atomic>
@@ -31,6 +32,7 @@ class thread_pool : public std::enable_shared_from_this<thread_pool>
     {
         private_constructor() = default;
     };
+
 public:
     /**
      * A schedule operation is an awaitable type with a coroutine to resume the task scheduled on one of
@@ -165,6 +167,8 @@ public:
                 if (handle != nullptr) [[likely]]
                 {
                     m_queue.emplace_back(handle);
+                    // TSAN: publish work into the queue — release on the slot address
+                    ::coro::detail::tsan_release(&m_queue.back());
                 }
                 else
                 {
