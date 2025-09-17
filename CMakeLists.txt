@@ -2,20 +2,25 @@ cmake_minimum_required(VERSION 3.15)
 include(CMakeDependentOption)
 find_package(Git)
 
-# Define the libcoro version string based on `git describe` command for the latest tagged release.
-execute_process(
-    COMMAND "${GIT_EXECUTABLE}" describe --match v[0-9]* --always --tags --dirty=-dirty
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    OUTPUT_VARIABLE GIT_VERSION
-    OUTPUT_STRIP_TRAILING_WHITESPACE)
+ # Determine project version from `git describe` when available; fall back to a default.
+ # Expected tag format: vX.Y.Z (optionally with suffix like -<commits>-g<hash> or -dirty)
+ set(PROJECT_VERSION "0.0.0")
+ if(GIT_EXECUTABLE)
+     execute_process(
+         COMMAND "${GIT_EXECUTABLE}" describe --match v[0-9]* --always --tags --dirty=-dirty
+         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+         OUTPUT_VARIABLE GIT_VERSION
+         OUTPUT_STRIP_TRAILING_WHITESPACE)
+     message(STATUS "git describe last release tag: ${GIT_VERSION}")
 
-message(STATUS "git describe last release tag: ${GIT_VERSION}")
-
-# The git describe tag is in the format of "vN.N.N-<hash>[-dirty]"
-# The cmake project VERSION parameter requires a semver, strip the v and the suffix.
-string(FIND ${GIT_VERSION} "-" GIT_VERSION_DASH_POSITION)
-math(EXPR GIT_VERSION_END "${GIT_VERSION_DASH_POSITION} - 1")
-string(SUBSTRING ${GIT_VERSION} 1 ${GIT_VERSION_END} PROJECT_VERSION)
+     # Try to extract semantic version from the describe output.
+     # Prefer tags with a leading 'v', fall back to plain X.Y.Z if present.
+     if(GIT_VERSION MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)")
+         set(PROJECT_VERSION "${CMAKE_MATCH_1}")
+     elseif(GIT_VERSION MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)")
+         set(PROJECT_VERSION "${CMAKE_MATCH_1}")
+     endif()
+ endif()
 
 project(libcoro
     VERSION ${PROJECT_VERSION}
