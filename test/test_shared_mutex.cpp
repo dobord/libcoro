@@ -65,18 +65,17 @@ TEST_CASE("mutex single waiter not locked exclusive with shared scoped lock", "[
     auto make_emplace_task = [](coro::shared_mutex<coro::thread_pool>& m,
                                 std::vector<uint64_t>&                 output) -> coro::task<void>
     {
-
         std::cerr << "Acquiring lock exclusive\n";
-        co_await m.scoped_lock([](coro::shared_mutex<coro::thread_pool>& m,
-                                std::vector<uint64_t>&                 output) -> coro::task<void>
-        {
-            REQUIRE_FALSE(m.try_lock());
-            REQUIRE_FALSE(m.try_lock_shared());
-            std::cerr << "lock acquired, emplacing back 1\n";
-            output.emplace_back(1);
-            std::cerr << "coroutine done\n";
-            co_return;
-        }(m, output));
+        co_await m.scoped_lock(
+            [](coro::shared_mutex<coro::thread_pool>& m, std::vector<uint64_t>& output) -> coro::task<void>
+            {
+                REQUIRE_FALSE(m.try_lock());
+                REQUIRE_FALSE(m.try_lock_shared());
+                std::cerr << "lock acquired, emplacing back 1\n";
+                output.emplace_back(1);
+                std::cerr << "coroutine done\n";
+                co_return;
+            }(m, output));
 
         // The scoped lock will release the lock upon destructing, but shared mutex
         // scoped locks spawn the unlock() into the thread pool so it doesn't block.
@@ -159,18 +158,19 @@ TEST_CASE("mutex single waiter not locked shared shared scope lock", "[shared_mu
                                 std::vector<uint64_t>&                 values) -> coro::task<void>
     {
         std::cerr << "Acquiring lock shared\n";
-        co_await m.scoped_lock_shared([](coro::shared_mutex<coro::thread_pool>& m, std::vector<uint64_t>& values) -> coro::task<void>
-        {
-            REQUIRE_FALSE(m.try_lock());
-            REQUIRE(m.try_lock_shared());
-            std::cerr << "lock acquired, reading values\n";
-            for (const auto& v : values)
+        co_await m.scoped_lock_shared(
+            [](coro::shared_mutex<coro::thread_pool>& m, std::vector<uint64_t>& values) -> coro::task<void>
             {
-                std::cerr << v << ",";
-            }
-            std::cerr << "\ncoroutine done\n";
-            co_await m.unlock_shared(); // manually shared unlock once
-        }(m, values));
+                REQUIRE_FALSE(m.try_lock());
+                REQUIRE(m.try_lock_shared());
+                std::cerr << "lock acquired, reading values\n";
+                for (const auto& v : values)
+                {
+                    std::cerr << v << ",";
+                }
+                std::cerr << "\ncoroutine done\n";
+                co_await m.unlock_shared(); // manually shared unlock once
+            }(m, values));
 
         // The scoped lock will release the lock upon destructing.
         while (!m.try_lock())
@@ -198,7 +198,9 @@ TEST_CASE("mutex many shared and exclusive waiters interleaved", "[shared_mutex]
 {
     auto s = coro::io_scheduler::make_shared(
         coro::io_scheduler::options{.pool = coro::thread_pool::options{.thread_count = 8}});
-    coro::shared_mutex<coro::io_scheduler> m{s};
+    // Place shared_mutex on the heap to avoid TSAN reporting accesses to main thread's stack
+    // from worker threads. Lifetime is controlled via shared_ptr and outlives all tasks.
+    auto m = std::make_shared<coro::shared_mutex<coro::io_scheduler>>(s);
 
     std::atomic<bool> read_value{false};
 
@@ -283,7 +285,11 @@ TEST_CASE("mutex many shared and exclusive waiters interleaved", "[shared_mutex]
         co_return;
     };
 
-    coro::sync_wait(coro::when_all(make_shared_tasks_task(s, m, read_value), make_exclusive_task(s, m, read_value)));
+    coro::sync_wait(coro::when_all(make_shared_tasks_task(s, *m, read_value), make_exclusive_task(s, *m, read_value)));
+
+    // Ensure all queued work is drained and background threads are stopped
+    // before destroying the shared_mutex.
+    s->shutdown();
 }
 #endif // #ifdef LIBCORO_FEATURE_NETWORKING
 
