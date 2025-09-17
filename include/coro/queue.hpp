@@ -5,7 +5,12 @@
 #include "coro/sync_wait.hpp"
 #include "coro/task.hpp"
 
+#include "coro/detail/awaiter_list.hpp"
+#include "coro/detail/tsan.hpp"
+
 #include <queue>
+// for std::atomic used in m_waiters
+#include <atomic>
 
 namespace coro
 {
@@ -97,15 +102,27 @@ public:
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
         {
             // No element is ready, put ourselves on the waiter list and suspend.
-            this->m_next         = m_queue.m_waiters;
-            m_queue.m_waiters    = this;
+            ::coro::detail::awaiter_list_push(m_queue.m_waiters, this);
             m_awaiting_coroutine = awaiting_coroutine;
+            // Publish the awaiting coroutine handle for the resumer (producer) and
+            // establish an edge for the resume() internal read.
+            ::coro::detail::tsan_release(&m_awaiting_coroutine);
+            // Also publish the awaiter object itself for the producer to acquire before
+            // reading fields and writing m_element.
+            ::coro::detail::tsan_release(this);
+            // Broad publication on the queue object under the lock as well.
+            ::coro::detail::tsan_release(&m_queue);
             m_queue.m_mutex.unlock();
             return true;
         }
 
         [[nodiscard]] auto await_resume() noexcept -> expected<element_type, queue_consume_result>
         {
+            // Establish HB from producer to consumer and cover resume() hand-off.
+            ::coro::detail::tsan_acquire(m_awaiting_coroutine.address());
+            ::coro::detail::tsan_acquire(&m_awaiting_coroutine);
+            ::coro::detail::tsan_acquire(this);
+            ::coro::detail::tsan_acquire(&m_queue);
             if (m_element.has_value())
             {
                 if constexpr (std::is_move_constructible_v<element_type>)
@@ -131,10 +148,7 @@ public:
     };
 
     queue() {}
-    ~queue()
-    {
-        coro::sync_wait(shutdown());
-    }
+    ~queue() { coro::sync_wait(shutdown()); }
 
     queue(const queue&)  = delete;
     queue(queue&& other) = delete;
@@ -174,6 +188,8 @@ public:
         // The general idea is to see if anyone is waiting, and if so directly transfer the element
         // to that waiter. If there is nobody waiting then move the element into the queue.
         auto lock = co_await m_mutex.scoped_lock();
+        // TSAN: pair with tsan_release(&m_mutex) in mutex::unlock() from waiter side
+        ::coro::detail::tsan_acquire(&m_mutex);
 
         if (m_running_state.load(std::memory_order::acquire) != running_state_t::running)
         {
@@ -181,13 +197,22 @@ public:
         }
 
         // assert(m_element.empty())
-        if (m_waiters != nullptr)
+        if (auto* waiter = ::coro::detail::awaiter_list_pop(m_waiters); waiter != nullptr)
         {
-            auto* waiter = std::exchange(m_waiters, m_waiters->m_next);
             lock.unlock();
 
             // Transfer the element directly to the awaiter.
+            // First, acquire on the coroutine frame address to observe
+            // await_suspend()'s publications and to cover resume()'s internal read.
+            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
+            ::coro::detail::tsan_acquire(waiter);
             waiter->m_element = element;
+            // Publish to the resumed coroutine: then release on frame address to cover resume() read and hand-off to
+            // await_resume(), release on awaiter object, and a broad release on queue.
+            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_release(waiter);
+            ::coro::detail::tsan_release(this);
             waiter->m_awaiting_coroutine.resume();
         }
         else
@@ -209,19 +234,26 @@ public:
     auto push(element_type&& element) -> coro::task<queue_produce_result>
     {
         auto lock = co_await m_mutex.scoped_lock();
+        // TSAN: pair with tsan_release(&m_mutex) in mutex::unlock() from waiter side
+        ::coro::detail::tsan_acquire(&m_mutex);
 
         if (m_running_state.load(std::memory_order::acquire) != running_state_t::running)
         {
             co_return queue_produce_result::stopped;
         }
 
-        if (m_waiters != nullptr)
+        if (auto* waiter = ::coro::detail::awaiter_list_pop(m_waiters); waiter != nullptr)
         {
-            auto* waiter = std::exchange(m_waiters, m_waiters->m_next);
             lock.unlock();
 
             // Transfer the element directly to the awaiter.
+            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
+            ::coro::detail::tsan_acquire(waiter);
             waiter->m_element = std::move(element);
+            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_release(waiter);
+            ::coro::detail::tsan_release(this);
             waiter->m_awaiting_coroutine.resume();
         }
         else
@@ -243,6 +275,8 @@ public:
     auto emplace(args_type&&... args) -> coro::task<queue_produce_result>
     {
         auto lock = co_await m_mutex.scoped_lock();
+        // TSAN: pair with tsan_release(&m_mutex) in mutex::unlock() from waiter side
+        ::coro::detail::tsan_acquire(&m_mutex);
 
         if (m_running_state.load(std::memory_order::acquire) != running_state_t::running)
         {
@@ -254,7 +288,13 @@ public:
             auto* waiter = std::exchange(m_waiters, m_waiters->m_next);
             lock.unlock();
 
+            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
+            ::coro::detail::tsan_acquire(waiter);
             waiter->m_element.emplace(std::forward<args_type>(args)...);
+            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_release(waiter);
+            ::coro::detail::tsan_release(this);
             waiter->m_awaiting_coroutine.resume();
         }
         else
@@ -274,6 +314,8 @@ public:
     [[nodiscard]] auto pop() -> coro::task<expected<element_type, queue_consume_result>>
     {
         co_await m_mutex.lock();
+        // TSAN: pair with tsan_release(&m_mutex) in mutex::unlock() in awaiter::await_suspend()
+        ::coro::detail::tsan_acquire(&m_mutex);
         co_return co_await awaiter{*this};
     }
 
@@ -345,12 +387,19 @@ public:
             co_return;
         }
 
-        auto* waiters = m_waiters;
-        m_waiters = nullptr;
+        auto* waiters = ::coro::detail::awaiter_list_pop_all(m_waiters);
         lk.unlock();
         while (waiters != nullptr)
         {
             auto* next = waiters->m_next;
+            // No element is provided, but we still need to publish the awaiter and
+            // establish the resume() HB edge.
+            ::coro::detail::tsan_acquire(&waiters->m_awaiting_coroutine);
+            ::coro::detail::tsan_acquire(waiters);
+            ::coro::detail::tsan_acquire(waiters->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_release(waiters->m_awaiting_coroutine.address());
+            ::coro::detail::tsan_release(waiters);
+            ::coro::detail::tsan_release(this);
             waiters->m_awaiting_coroutine.resume();
             waiters = next;
         }
@@ -368,7 +417,7 @@ public:
     template<coro::concepts::executor executor_type>
     auto shutdown_drain(std::shared_ptr<executor_type> e) -> coro::task<void>
     {
-        auto lk = co_await m_mutex.scoped_lock();
+        auto lk       = co_await m_mutex.scoped_lock();
         auto expected = running_state_t::running;
         if (!m_running_state.compare_exchange_strong(
                 expected, running_state_t::draining, std::memory_order::acq_rel, std::memory_order::relaxed))
@@ -389,12 +438,15 @@ public:
      * Returns true if shutdown() or shutdown_drain() have been called on this coro::queue.
      * @return True if the coro::queue has been shutdown.
      */
-    [[nodiscard]] auto is_shutdown() const -> bool { return m_running_state.load(std::memory_order::acquire) != running_state_t::running; }
+    [[nodiscard]] auto is_shutdown() const -> bool
+    {
+        return m_running_state.load(std::memory_order::acquire) != running_state_t::running;
+    }
 
 private:
     friend awaiter;
     /// @brief The list of pop() awaiters.
-    awaiter* m_waiters{nullptr};
+    std::atomic<awaiter*> m_waiters{nullptr};
     /// @brief Mutex for properly maintaining the queue.
     coro::mutex m_mutex{};
     /// @brief The underlying queue data structure.
