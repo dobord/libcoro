@@ -4,22 +4,16 @@
 namespace coro
 {
 
-condition_variable::awaiter_base::awaiter_base(
-    coro::condition_variable& cv,
-    coro::scoped_lock& l)
+condition_variable::awaiter_base::awaiter_base(coro::condition_variable& cv, coro::scoped_lock& l)
     : m_condition_variable(cv),
-        m_lock(l)
+      m_lock(l)
 {
-
+    // Cache the mutex pointer associated with the scoped lock for later re-locking
+    m_mutex_ptr = m_lock.m_mutex;
 }
 
-condition_variable::awaiter::awaiter(
-    coro::condition_variable& cv,
-    coro::scoped_lock& l
-) noexcept
-    : awaiter_base(cv, l)
+condition_variable::awaiter::awaiter(coro::condition_variable& cv, coro::scoped_lock& l) noexcept : awaiter_base(cv, l)
 {
-
 }
 
 auto condition_variable::awaiter::await_ready() const noexcept -> bool
@@ -31,66 +25,77 @@ auto condition_variable::awaiter::await_suspend(std::coroutine_handle<> awaiting
 {
     m_awaiting_coroutine = awaiting_coroutine;
     coro::detail::awaiter_list_push(m_condition_variable.m_awaiters, static_cast<awaiter_base*>(this));
-    m_lock.m_mutex->unlock();
+    // Release the lock held by the waiter while enqueuing.
+    m_lock.unlock();
     return true;
 }
 
 auto condition_variable::awaiter::on_notify() -> coro::task<condition_variable::notify_status_t>
 {
-    // Re-lock, the waiter is no responsible for unlocking.
-    co_await m_lock.m_mutex->lock();
+    // Re-lock; the waiter is now responsible for unlocking.
+    // Acquire a fresh scoped_lock and transfer ownership into m_lock to preserve RAII semantics.
+    if (m_mutex_ptr == nullptr)
+    {
+        // Defensive: should not happen, but avoid UB.
+        co_return notify_status_t::not_ready;
+    }
+    auto new_lock = co_await m_mutex_ptr->scoped_lock();
+    m_lock        = std::move(new_lock);
     m_awaiting_coroutine.resume();
     co_return notify_status_t::ready;
 }
 
 condition_variable::awaiter_with_predicate::awaiter_with_predicate(
-    coro::condition_variable& cv,
-    coro::scoped_lock& l,
-    condition_variable::predicate_type p
-) noexcept
+    coro::condition_variable& cv, coro::scoped_lock& l, condition_variable::predicate_type p) noexcept
     : awaiter_base(cv, l),
       m_predicate(std::move(p))
-{}
+{
+}
 
 auto condition_variable::awaiter_with_predicate::await_ready() const noexcept -> bool
 {
     return m_predicate();
 }
 
-auto condition_variable::awaiter_with_predicate::await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
+auto condition_variable::awaiter_with_predicate::await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept
+    -> bool
 {
     m_awaiting_coroutine = awaiting_coroutine;
     coro::detail::awaiter_list_push(m_condition_variable.m_awaiters, static_cast<awaiter_base*>(this));
-    m_lock.m_mutex->unlock();
+    m_lock.unlock();
     return true;
 }
 
 auto condition_variable::awaiter_with_predicate::on_notify() -> coro::task<condition_variable::notify_status_t>
 {
-    co_await m_lock.m_mutex->lock();
+    if (m_mutex_ptr == nullptr)
+    {
+        co_return notify_status_t::not_ready;
+    }
+    auto new_lock = co_await m_mutex_ptr->scoped_lock();
     if (m_predicate())
     {
+        m_lock = std::move(new_lock);
         m_awaiting_coroutine.resume();
         co_return notify_status_t::ready;
     }
 
-    m_lock.m_mutex->unlock();
+    // Predicate not ready, release the temporary lock.
+    new_lock.unlock();
     co_return notify_status_t::not_ready;
 }
 
 #ifndef EMSCRIPTEN
 
 condition_variable::awaiter_with_predicate_stop_token::awaiter_with_predicate_stop_token(
-    coro::condition_variable& cv,
-    coro::scoped_lock& l,
+    coro::condition_variable&          cv,
+    coro::scoped_lock&                 l,
     condition_variable::predicate_type p,
-    std::stop_token stop_token
-) noexcept
+    std::stop_token                    stop_token) noexcept
     : awaiter_base(cv, l),
       m_predicate(std::move(p)),
       m_stop_token(std::move(stop_token))
 {
-
 }
 
 auto condition_variable::awaiter_with_predicate_stop_token::await_ready() noexcept -> bool
@@ -99,27 +104,33 @@ auto condition_variable::awaiter_with_predicate_stop_token::await_ready() noexce
     return m_predicate_result;
 }
 
-auto condition_variable::awaiter_with_predicate_stop_token::await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
+auto condition_variable::awaiter_with_predicate_stop_token::await_suspend(
+    std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
 {
     m_awaiting_coroutine = awaiting_coroutine;
     coro::detail::awaiter_list_push(m_condition_variable.m_awaiters, static_cast<awaiter_base*>(this));
-    m_lock.m_mutex->unlock();
+    m_lock.unlock();
     return true;
 }
 
-auto condition_variable::awaiter_with_predicate_stop_token::on_notify() -> coro::task<condition_variable::notify_status_t>
+auto condition_variable::awaiter_with_predicate_stop_token::on_notify()
+    -> coro::task<condition_variable::notify_status_t>
 {
-    co_await m_lock.m_mutex->lock();
+    if (m_mutex_ptr == nullptr)
+    {
+        co_return notify_status_t::not_ready;
+    }
+    auto new_lock      = co_await m_mutex_ptr->scoped_lock();
     m_predicate_result = m_predicate();
 
     // If the predicate is ready or a stop has been requested resume.
     if (m_predicate_result || m_stop_token.stop_requested())
     {
+        m_lock = std::move(new_lock);
         m_awaiting_coroutine.resume();
         co_return notify_status_t::ready;
     }
-
-    m_lock.m_mutex->unlock();
+    new_lock.unlock();
     co_return notify_status_t::not_ready;
 }
 
@@ -128,28 +139,22 @@ auto condition_variable::awaiter_with_predicate_stop_token::on_notify() -> coro:
 #ifdef LIBCORO_FEATURE_NETWORKING
 
 condition_variable::controller_data::controller_data(
-    std::optional<std::cv_status>& status,
-    bool& predicate_result,
+    std::optional<std::cv_status>&                    status,
+    bool&                                             predicate_result,
     std::optional<condition_variable::predicate_type> predicate,
-    std::optional<const std::stop_token> stop_token
-) noexcept
+    std::optional<const std::stop_token>              stop_token) noexcept
     : m_status(status),
       m_predicate_result(predicate_result),
       m_predicate(std::move(predicate)),
       m_stop_token({std::move(stop_token)})
 {
-
 }
 
 condition_variable::awaiter_with_wait_hook::awaiter_with_wait_hook(
-    coro::condition_variable& cv,
-    coro::scoped_lock& l,
-    condition_variable::controller_data& data
-) noexcept
+    coro::condition_variable& cv, coro::scoped_lock& l, condition_variable::controller_data& data) noexcept
     : awaiter_base(cv, l),
       m_data(data)
 {
-
 }
 
 auto condition_variable::awaiter_with_wait_hook::on_notify() -> coro::task<condition_variable::notify_status_t>
@@ -165,14 +170,15 @@ auto condition_variable::awaiter_with_wait_hook::on_notify() -> coro::task<condi
         co_return notify_status_t::awaiter_dead;
     }
 
-    auto* waiter_mutex = m_lock.m_mutex;
-    co_await waiter_mutex->lock();
+    auto* waiter_mutex = m_mutex_ptr;
+    auto  new_lock     = co_await waiter_mutex->scoped_lock();
 
     // If there is no predicate then this awaiter is always ready on notify.
     if (!m_data.m_predicate.has_value())
     {
         m_data.m_awaiter_completed.exchange(true, std::memory_order::release);
         m_data.m_status = {std::cv_status::no_timeout};
+        m_lock          = std::move(new_lock);
         event_lock.unlock();
         m_data.m_notify_callback.set();
         co_return notify_status_t::ready;
@@ -185,12 +191,12 @@ auto condition_variable::awaiter_with_wait_hook::on_notify() -> coro::task<condi
     {
         m_data.m_awaiter_completed.exchange(true, std::memory_order::release);
         m_data.m_status = {std::cv_status::no_timeout};
+        m_lock          = std::move(new_lock);
         event_lock.unlock();
         m_data.m_notify_callback.set();
         co_return notify_status_t::ready;
     }
-
-    waiter_mutex->unlock();
+    new_lock.unlock();
     co_return notify_status_t::not_ready;
 }
 
@@ -225,7 +231,7 @@ auto condition_variable::notify_one() -> coro::task<void>
 
 auto condition_variable::notify_all() -> coro::task<void>
 {
-    auto* waiter = detail::awaiter_list_pop_all(m_awaiters);
+    auto*         waiter = detail::awaiter_list_pop_all(m_awaiters);
     awaiter_base* next;
 
     while (waiter != nullptr)
@@ -256,10 +262,8 @@ auto condition_variable::wait(coro::scoped_lock& lock) -> awaiter
     return awaiter{*this, lock};
 }
 
-auto condition_variable::wait(
-    coro::scoped_lock& lock,
-    condition_variable::predicate_type predicate
-) -> awaiter_with_predicate
+auto condition_variable::wait(coro::scoped_lock& lock, condition_variable::predicate_type predicate)
+    -> awaiter_with_predicate
 {
     return awaiter_with_predicate{*this, lock, std::move(predicate)};
 }
@@ -267,10 +271,9 @@ auto condition_variable::wait(
 #ifndef EMSCRIPTEN
 
 auto condition_variable::wait(
-    coro::scoped_lock& lock,
-    std::stop_token stop_token,
-    condition_variable::predicate_type predicate
-) -> awaiter_with_predicate_stop_token
+    coro::scoped_lock&                 lock,
+    std::stop_token                    stop_token,
+    condition_variable::predicate_type predicate) -> awaiter_with_predicate_stop_token
 {
     return awaiter_with_predicate_stop_token{*this, lock, std::move(predicate), std::move(stop_token)};
 }
