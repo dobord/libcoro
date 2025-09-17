@@ -218,10 +218,12 @@ jobs:
                     cd Release
                     cmake \
                         -GNinja \
-                        -DCMAKE_BUILD_TYPE=Release \
+                        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                         -DCMAKE_C_COMPILER=clang-${{ matrix.clang_version }} \
                         -DCMAKE_CXX_COMPILER=clang++-${{ matrix.clang_version }} \
                         -DCMAKE_CXX_STANDARD=${{ matrix.cxx_standard }} \
+                        -DCMAKE_C_FLAGS="-fno-omit-frame-pointer" \
+                        -DCMAKE_CXX_FLAGS="-fno-omit-frame-pointer" \
                         -DLIBCORO_FEATURE_NETWORKING=${{ matrix.libcoro_feature_networking.enabled }} \
                         -DLIBCORO_FEATURE_TLS=${{ matrix.libcoro_feature_networking.tls }} \
                         -DLIBCORO_ENABLE_TSAN=ON \
@@ -233,4 +235,10 @@ jobs:
                     cd Release
                     # Tests define TSAN_OPTIONS and suppressions per-test in CTest when LIBCORO_ENABLE_TSAN=ON
                     # Run verbosely and serially (CTest will set RUN_SERIAL for TSAN).
+                    # Ensure sanitizers can symbolize stacks properly
+                    if [ -x "/usr/bin/llvm-symbolizer-${{ matrix.clang_version }}" ]; then
+                      export ASAN_SYMBOLIZER_PATH="/usr/bin/llvm-symbolizer-${{ matrix.clang_version }}"
+                    elif [ -x "/usr/bin/llvm-symbolizer" ]; then
+                      export ASAN_SYMBOLIZER_PATH="/usr/bin/llvm-symbolizer"
+                    fi
                     ctest --build-config Release -VV -j1
