@@ -1,10 +1,13 @@
 #pragma once
 
+#include <atomic>
 #include <coroutine>
 #include <exception>
 #include <stdexcept>
 #include <utility>
 #include <variant>
+
+#include "coro/detail/tsan.hpp"
 
 namespace coro
 {
@@ -25,14 +28,26 @@ struct promise_base
         {
             // If there is a continuation call it, otherwise this is the end of the line.
             auto& promise = coroutine.promise();
-            if (promise.m_continuation != nullptr)
+            // Publish completion before handing off to continuation.
+            promise.set_complete_release();
+            ::coro::detail::tsan_release(&promise);
+
+            // Read continuation before potentially dropping the running reference.
+            std::coroutine_handle<> continuation = promise.m_continuation;
+
+            // Drop the running reference. If this was the last reference and there's no continuation,
+            // we can safely destroy here.
+            if (promise.release() && continuation == nullptr)
             {
-                return promise.m_continuation;
-            }
-            else
-            {
+                coroutine.destroy();
                 return std::noop_coroutine();
             }
+
+            if (continuation != nullptr)
+            {
+                return continuation;
+            }
+            return std::noop_coroutine();
         }
 
         auto await_resume() noexcept -> void
@@ -50,8 +65,21 @@ struct promise_base
 
     auto continuation(std::coroutine_handle<> continuation) noexcept -> void { m_continuation = continuation; }
 
+    // Completion state helpers used to avoid racing on coroutine header in task::is_ready()/resume().
+    void set_complete_release() noexcept { m_done.store(true, std::memory_order::release); }
+    bool is_complete_acquire() const noexcept { return m_done.load(std::memory_order::acquire); }
+
 protected:
+    template<typename>
+    friend class ::coro::task;
     std::coroutine_handle<> m_continuation{nullptr};
+    std::atomic<bool>       m_done{false};
+    // Intrusive reference count for safe lifetime management across threads.
+    std::atomic<uint32_t> m_refcount{2};
+
+    void add_ref() noexcept { m_refcount.fetch_add(1, std::memory_order::acq_rel); }
+    // Returns true if this was the last reference and caller must destroy the coroutine frame.
+    bool release() noexcept { return m_refcount.fetch_sub(1, std::memory_order::acq_rel) == 1; }
 };
 
 template<typename return_type>
@@ -72,9 +100,9 @@ public:
     using coroutine_handle                         = std::coroutine_handle<promise<return_type>>;
     static constexpr bool return_type_is_reference = std::is_reference_v<return_type>;
     using stored_type                              = std::conditional_t<
-        return_type_is_reference,
-        std::remove_reference_t<return_type>*,
-        std::remove_const_t<return_type>>;
+                                     return_type_is_reference,
+                                     std::remove_reference_t<return_type>*,
+                                     std::remove_const_t<return_type>>;
     using variant_type = std::variant<unset_return_value, stored_type, std::exception_ptr>;
 
     promise() noexcept {}
@@ -87,9 +115,9 @@ public:
     auto get_return_object() noexcept -> task_type;
 
     template<typename value_type>
-    requires(return_type_is_reference and std::is_constructible_v<return_type, value_type&&>) or
-        (not return_type_is_reference and
-         std::is_constructible_v<stored_type, value_type&&>) auto return_value(value_type&& value) -> void
+        requires(return_type_is_reference and std::is_constructible_v<return_type, value_type &&>) or
+                    (not return_type_is_reference and std::is_constructible_v<stored_type, value_type &&>)
+    auto return_value(value_type&& value) -> void
     {
         if constexpr (return_type_is_reference)
         {
@@ -102,7 +130,8 @@ public:
         }
     }
 
-    auto return_value(stored_type&& value) -> void requires(not return_type_is_reference)
+    auto return_value(stored_type&& value) -> void
+        requires(not return_type_is_reference)
     {
         if constexpr (std::is_move_constructible_v<stored_type>)
         {
@@ -238,7 +267,15 @@ public:
     {
         awaitable_base(coroutine_handle coroutine) noexcept : m_coroutine(coroutine) {}
 
-        auto await_ready() const noexcept -> bool { return !m_coroutine || m_coroutine.done(); }
+        auto await_ready() const noexcept -> bool
+        {
+            if (!m_coroutine)
+            {
+                return true;
+            }
+            // Use promise completion flag to avoid racing on coroutine header.
+            return m_coroutine.promise().is_complete_acquire();
+        }
 
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
         {
@@ -259,7 +296,12 @@ public:
     {
         if (m_coroutine != nullptr)
         {
-            m_coroutine.destroy();
+            auto& p = m_coroutine.promise();
+            if (p.release())
+            {
+                m_coroutine.destroy();
+            }
+            m_coroutine = nullptr;
         }
     }
 
@@ -271,7 +313,11 @@ public:
         {
             if (m_coroutine != nullptr)
             {
-                m_coroutine.destroy();
+                auto& p = m_coroutine.promise();
+                if (p.release())
+                {
+                    m_coroutine.destroy();
+                }
             }
 
             m_coroutine = std::exchange(other.m_coroutine, nullptr);
@@ -283,22 +329,17 @@ public:
     /**
      * @return True if the task is in its final suspend or if the task has been destroyed.
      */
-    auto is_ready() const noexcept -> bool { return m_coroutine == nullptr || m_coroutine.done(); }
-
-    auto resume() -> bool
-    {
-        if (!m_coroutine.done())
-        {
-            m_coroutine.resume();
-        }
-        return !m_coroutine.done();
-    }
 
     auto destroy() -> bool
     {
         if (m_coroutine != nullptr)
         {
-            m_coroutine.destroy();
+            auto& p          = m_coroutine.promise();
+            bool  do_destroy = p.release();
+            if (do_destroy)
+            {
+                m_coroutine.destroy();
+            }
             m_coroutine = nullptr;
             return true;
         }
@@ -310,7 +351,34 @@ public:
     {
         struct awaitable : public awaitable_base
         {
-            auto await_resume() -> decltype(auto) { return this->m_coroutine.promise().result(); }
+            using awaitable_base::awaitable_base;
+            auto await_resume() -> decltype(auto)
+            {
+                // Pair with release in final_suspend
+                auto& promise = this->m_coroutine.promise();
+                ::coro::detail::tsan_acquire(&promise);
+                // For lvalue co_await we do not destroy the coroutine here to keep references valid.
+                if constexpr (std::is_void_v<return_type>)
+                {
+                    promise.result();
+                    (void)promise.release();
+                    return;
+                }
+                else
+                {
+                    using result_t = decltype(promise.result());
+                    result_t r     = promise.result();
+                    (void)promise.release();
+                    return static_cast<result_t>(r);
+                }
+            }
+
+            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            {
+                // Hold a reference for the awaiting coroutine until await_resume.
+                this->m_coroutine.promise().add_ref();
+                return awaitable_base::await_suspend(awaiting_coroutine);
+            }
         };
 
         return awaitable{m_coroutine};
@@ -320,12 +388,55 @@ public:
     {
         struct awaitable : public awaitable_base
         {
-            auto await_resume() -> decltype(auto) { return std::move(this->m_coroutine.promise()).result(); }
-        };
+            using awaitable_base::awaitable_base;
+            auto await_resume() -> decltype(auto)
+            {
+                // Pair with release in final_suspend
+                auto& promise = this->m_coroutine.promise();
+                ::coro::detail::tsan_acquire(&promise);
+                if constexpr (std::is_void_v<return_type>)
+                {
+                    promise.result();
+                    (void)promise.release();
+                    return;
+                }
+                else
+                {
+                    using result_t = decltype(std::move(promise).result());
+                    result_t r     = std::move(promise).result();
+                    (void)promise.release();
+                    return static_cast<result_t>(r);
+                }
+            }
 
+            auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> std::coroutine_handle<>
+            {
+                // Hold a reference for the awaiting coroutine until await_resume.
+                this->m_coroutine.promise().add_ref();
+                return awaitable_base::await_suspend(awaiting_coroutine);
+            }
+        };
         return awaitable{m_coroutine};
     }
 
+    auto is_ready() const noexcept -> bool
+    {
+        if (m_coroutine == nullptr)
+        {
+            return true;
+        }
+        return m_coroutine.promise().is_complete_acquire();
+    }
+
+    auto resume() -> bool
+    {
+        // Check our own flag to avoid concurrent races on the coroutine header.
+        if (!m_coroutine.promise().is_complete_acquire())
+        {
+            m_coroutine.resume();
+        }
+        return !m_coroutine.promise().is_complete_acquire();
+    }
     auto promise() & -> promise_type& { return m_coroutine.promise(); }
     auto promise() const& -> const promise_type& { return m_coroutine.promise(); }
     auto promise() && -> promise_type&& { return std::move(m_coroutine.promise()); }
