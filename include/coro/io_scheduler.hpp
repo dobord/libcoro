@@ -149,6 +149,8 @@ public:
                     std::scoped_lock lk{m_scheduler.m_scheduled_tasks_mutex};
                     m_scheduler.m_scheduled_tasks.emplace_back(awaiting_coroutine);
                 }
+                // TSAN: Publish scheduled task handle for the IO thread to acquire before resume.
+                detail::tsan_release(&m_scheduler.m_scheduled_tasks.back());
 
                 // Trigger the event to wake-up the scheduler if this event isn't currently triggered.
                 bool expected{false};
@@ -282,7 +284,7 @@ public:
      *               Given zero or negative amount of time this behaves identical to schedule().
      */
     template<class rep_type, class period_type>
-     [[nodiscard]] auto schedule_after(std::chrono::duration<rep_type, period_type> amount) -> coro::task<void>
+    [[nodiscard]] auto schedule_after(std::chrono::duration<rep_type, period_type> amount) -> coro::task<void>
     {
         return yield_for_internal(std::chrono::duration_cast<std::chrono::nanoseconds>(amount));
     }
@@ -338,8 +340,9 @@ public:
      * @return THe result of the poll operation.
      */
     [[nodiscard]] auto poll(
-        const net::socket& sock, coro::poll_op op, std::chrono::milliseconds timeout = std::chrono::milliseconds{0})
-        -> coro::task<poll_status>
+        const net::socket&        sock,
+        coro::poll_op             op,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{0}) -> coro::task<poll_status>
     {
         return poll(sock.native_handle(), op, timeout);
     }

@@ -161,7 +161,6 @@ auto io_scheduler::shutdown() noexcept -> void
     // Only allow shutdown to occur once.
     if (m_shutdown_requested.exchange(true, std::memory_order::acq_rel) == false)
     {
-
         // Signal the event loop to stop asap, triggering the event fd is safe.
         const int value{1};
         ::write(m_shutdown_fd[1], reinterpret_cast<const void*>(&value), sizeof(value));
@@ -307,6 +306,8 @@ auto io_scheduler::process_scheduled_execute_inline() -> void
     // This set of handles can be safely resumed now since they do not have a corresponding timeout event.
     for (auto& task : tasks)
     {
+        // TSAN: Pair with tsan_release(&m_scheduled_tasks.back()) in schedule().
+        detail::tsan_acquire(&task);
         task.resume();
     }
     m_size.fetch_sub(tasks.size(), std::memory_order::release);
@@ -339,7 +340,10 @@ auto io_scheduler::process_event_execute(detail::poll_info* pi, poll_status stat
         {
             std::atomic_thread_fence(std::memory_order::acquire);
         }
-
+        // TSAN: Establish HB edge to the resumed coroutine via its awaiting handle storage
+        // and the awaiter object itself.
+        detail::tsan_acquire(&pi->m_awaiting_coroutine);
+        detail::tsan_release(pi);
         m_handles_to_resume.emplace_back(pi->m_awaiting_coroutine);
     }
 }
@@ -386,7 +390,10 @@ auto io_scheduler::process_timeout_execute() -> void
             {
                 std::atomic_thread_fence(std::memory_order::acquire);
             }
-
+            // TSAN: Establish HB edge to the resumed coroutine via its awaiting handle storage
+            // and the awaiter object itself.
+            detail::tsan_acquire(&pi->m_awaiting_coroutine);
+            detail::tsan_release(pi);
             m_handles_to_resume.emplace_back(pi->m_awaiting_coroutine);
             pi->m_poll_status = coro::poll_status::timeout;
         }

@@ -9,6 +9,8 @@
 #include <map>
 #include <optional>
 
+#include "coro/detail/tsan.hpp"
+
 namespace coro::detail
 {
 /**
@@ -47,8 +49,17 @@ struct poll_info
         {
             m_pi.m_awaiting_coroutine = awaiting_coroutine;
             std::atomic_thread_fence(std::memory_order::release);
+            // TSAN: Publish the awaiting handle and the awaiter object for the resumer thread.
+            detail::tsan_release(&m_pi.m_awaiting_coroutine);
+            detail::tsan_release(&m_pi);
         }
-        auto await_resume() noexcept -> coro::poll_status { return m_pi.m_poll_status; }
+        auto await_resume() noexcept -> coro::poll_status
+        {
+            // TSAN: Pair with acquires in the event loop prior to resuming this coroutine.
+            detail::tsan_acquire(&m_pi.m_awaiting_coroutine);
+            detail::tsan_acquire(&m_pi);
+            return m_pi.m_poll_status;
+        }
 
         poll_info& m_pi;
     };
