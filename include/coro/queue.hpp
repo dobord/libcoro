@@ -11,6 +11,7 @@
 #include <queue>
 // for std::atomic used in m_waiters
 #include <atomic>
+#include <optional>
 
 namespace coro
 {
@@ -101,50 +102,77 @@ public:
 
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
         {
-            // No element is ready, put ourselves on the waiter list and suspend.
-            ::coro::detail::awaiter_list_push(m_queue.m_waiters, this);
-            m_awaiting_coroutine = awaiting_coroutine;
-            // Publish the awaiting coroutine handle for the resumer (producer) and
-            // establish an edge for the resume() internal read.
-            ::coro::detail::tsan_release(&m_awaiting_coroutine);
-            // Also publish the awaiter object itself for the producer to acquire before
-            // reading fields and writing m_element.
-            ::coro::detail::tsan_release(this);
-            // Broad publication on the queue object under the lock as well.
+            // Use a heap wait-node to decouple lifetime from the coroutine frame and
+            // to allow resumer to safely resume even before await_suspend() returns.
+            m_node                       = new wait_node{};
+            m_node->m_awaiting_coroutine = awaiting_coroutine;
+            // Publish stable addresses before making the node visible.
+            ::coro::detail::tsan_release(&m_node->m_awaiting_coroutine);
+            ::coro::detail::tsan_release(m_node);
             ::coro::detail::tsan_release(&m_queue);
+            // Push into waiter list last.
+            ::coro::detail::awaiter_list_push(m_queue.m_waiters, m_node);
             m_queue.m_mutex.unlock();
             return true;
         }
 
         [[nodiscard]] auto await_resume() noexcept -> expected<element_type, queue_consume_result>
         {
-            // Establish HB from producer to consumer and cover resume() hand-off.
-            ::coro::detail::tsan_acquire(m_awaiting_coroutine.address());
-            ::coro::detail::tsan_acquire(&m_awaiting_coroutine);
-            ::coro::detail::tsan_acquire(this);
-            ::coro::detail::tsan_acquire(&m_queue);
-            if (m_element.has_value())
+            // Fast path: we didn't suspend (node is null). Return value if present, otherwise stopped.
+            if (m_node == nullptr)
+            {
+                if (m_element.has_value())
+                {
+                    if constexpr (std::is_move_constructible_v<element_type>)
+                    {
+                        return std::move(m_element.value());
+                    }
+                    else
+                    {
+                        return m_element.value();
+                    }
+                }
+                return unexpected<queue_consume_result>(queue_consume_result::stopped);
+            }
+
+            // Acquire hand-off from producer.
+            ::coro::detail::tsan_acquire(m_node);
+            (void)m_node->m_ready.load(std::memory_order::acquire);
+            expected<element_type, queue_consume_result> ret;
+            if (!m_node->m_stopped.load(std::memory_order::acquire))
             {
                 if constexpr (std::is_move_constructible_v<element_type>)
                 {
-                    return std::move(m_element.value());
+                    ret = std::move(m_node->m_element.value());
                 }
                 else
                 {
-                    return m_element.value();
+                    ret = m_node->m_element.value();
                 }
             }
             else
             {
-                // If we don't have an item the queue has stopped, the prior functions will have checked the state.
-                return unexpected<queue_consume_result>(queue_consume_result::stopped);
+                ret = unexpected<queue_consume_result>(queue_consume_result::stopped);
             }
+            delete m_node;
+            m_node = nullptr;
+            return ret;
         }
 
+        // Wait node used to publish to producer safely.
+        struct wait_node
+        {
+            wait_node*                  m_next{nullptr};
+            std::coroutine_handle<>     m_awaiting_coroutine{};
+            std::optional<element_type> m_element{std::nullopt};
+            std::atomic<int>            m_ready{0};
+            std::atomic<bool>           m_stopped{false};
+        };
+
+        queue& m_queue;
+        // Local storage for the fast path when await_ready() returns true.
         std::optional<element_type> m_element{std::nullopt};
-        queue&                      m_queue;
-        std::coroutine_handle<>     m_awaiting_coroutine{nullptr};
-        awaiter*                    m_next{nullptr};
+        wait_node*                  m_node{nullptr};
     };
 
     queue() {}
@@ -201,19 +229,15 @@ public:
         {
             lock.unlock();
 
-            // Transfer the element directly to the awaiter.
-            // First, acquire on the coroutine frame address to observe
-            // await_suspend()'s publications and to cover resume()'s internal read.
-            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
-            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
+            // Transfer the element directly to the wait-node and resume.
             ::coro::detail::tsan_acquire(waiter);
             waiter->m_element = element;
-            // Publish to the resumed coroutine: then release on frame address to cover resume() read and hand-off to
-            // await_resume(), release on awaiter object, and a broad release on queue.
-            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            waiter->m_stopped.store(false, std::memory_order::release);
+            waiter->m_ready.store(1, std::memory_order::release);
+            auto handle = waiter->m_awaiting_coroutine;
+            // Broad release for HB and then resume.
             ::coro::detail::tsan_release(waiter);
-            ::coro::detail::tsan_release(this);
-            waiter->m_awaiting_coroutine.resume();
+            handle.resume();
         }
         else
         {
@@ -246,15 +270,13 @@ public:
         {
             lock.unlock();
 
-            // Transfer the element directly to the awaiter.
-            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
-            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
             ::coro::detail::tsan_acquire(waiter);
             waiter->m_element = std::move(element);
-            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            waiter->m_stopped.store(false, std::memory_order::release);
+            waiter->m_ready.store(1, std::memory_order::release);
+            auto handle = waiter->m_awaiting_coroutine;
             ::coro::detail::tsan_release(waiter);
-            ::coro::detail::tsan_release(this);
-            waiter->m_awaiting_coroutine.resume();
+            handle.resume();
         }
         else
         {
@@ -283,19 +305,16 @@ public:
             co_return queue_produce_result::stopped;
         }
 
-        if (m_waiters != nullptr)
+        if (auto* waiter = ::coro::detail::awaiter_list_pop(m_waiters); waiter != nullptr)
         {
-            auto* waiter = std::exchange(m_waiters, m_waiters->m_next);
             lock.unlock();
-
-            ::coro::detail::tsan_acquire(waiter->m_awaiting_coroutine.address());
-            ::coro::detail::tsan_acquire(&waiter->m_awaiting_coroutine);
             ::coro::detail::tsan_acquire(waiter);
             waiter->m_element.emplace(std::forward<args_type>(args)...);
-            ::coro::detail::tsan_release(waiter->m_awaiting_coroutine.address());
+            waiter->m_stopped.store(false, std::memory_order::release);
+            waiter->m_ready.store(1, std::memory_order::release);
+            auto handle = waiter->m_awaiting_coroutine;
             ::coro::detail::tsan_release(waiter);
-            ::coro::detail::tsan_release(this);
-            waiter->m_awaiting_coroutine.resume();
+            handle.resume();
         }
         else
         {
@@ -392,15 +411,11 @@ public:
         while (waiters != nullptr)
         {
             auto* next = waiters->m_next;
-            // No element is provided, but we still need to publish the awaiter and
-            // establish the resume() HB edge.
-            ::coro::detail::tsan_acquire(&waiters->m_awaiting_coroutine);
-            ::coro::detail::tsan_acquire(waiters);
-            ::coro::detail::tsan_acquire(waiters->m_awaiting_coroutine.address());
-            ::coro::detail::tsan_release(waiters->m_awaiting_coroutine.address());
+            waiters->m_stopped.store(true, std::memory_order::release);
+            waiters->m_ready.store(1, std::memory_order::release);
+            auto handle = waiters->m_awaiting_coroutine;
             ::coro::detail::tsan_release(waiters);
-            ::coro::detail::tsan_release(this);
-            waiters->m_awaiting_coroutine.resume();
+            handle.resume();
             waiters = next;
         }
     }
@@ -445,8 +460,9 @@ public:
 
 private:
     friend awaiter;
-    /// @brief The list of pop() awaiters.
-    std::atomic<awaiter*> m_waiters{nullptr};
+    /// @brief The list of pop() wait-nodes.
+    using wait_node = typename awaiter::wait_node;
+    std::atomic<wait_node*> m_waiters{nullptr};
     /// @brief Mutex for properly maintaining the queue.
     coro::mutex m_mutex{};
     /// @brief The underlying queue data structure.

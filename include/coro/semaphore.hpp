@@ -148,6 +148,8 @@ public:
     [[nodiscard]] auto acquire() -> coro::task<semaphore_acquire_result>
     {
         co_await m_mutex.lock();
+        // TSAN: pair with tsan_release(&m_mutex) in unlock paths to cover resumption HB
+        coro::detail::tsan_acquire(&m_mutex);
         co_return co_await detail::acquire_operation<max_value>{*this};
     }
 
@@ -167,9 +169,9 @@ public:
             // Publish wake-up to waiter prior to resume()
             waiter->m_ready.store(1, std::memory_order::release);
             waiter->m_shutdown.store(false, std::memory_order::release);
-            // TSAN: acquire stable addresses published by await_suspend() before resume.
             // Do this after unlocking to avoid resuming while holding the mutex.
             m_mutex.unlock();
+            // TSAN: acquire stable addresses published by await_suspend() before resume.
             coro::detail::tsan_acquire(waiter);
             // Do not touch the coroutine frame address; the wait-node acts as the hand-off token.
             // Broad edge from semaphore to resumed waiter
