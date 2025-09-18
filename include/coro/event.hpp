@@ -6,6 +6,8 @@
 #include <coroutine>
 #include <memory>
 
+#include "coro/detail/tsan.hpp"
+
 namespace coro
 {
 enum class resume_order_policy
@@ -61,7 +63,16 @@ public:
         /**
          * Nothing to do on resume.
          */
-        auto await_resume() noexcept {}
+        auto await_resume() noexcept
+        {
+            // TSAN: Pair with tsan_release(&m_awaiting_coroutine) in await_suspend()
+            // and tsan_acquire(&waiter->m_awaiting_coroutine) in event::set() before resume().
+            detail::tsan_acquire(&m_awaiting_coroutine);
+            // TSAN: Pair with tsan_release(waiters) in event::set() before resume().
+            detail::tsan_acquire(this);
+            // TSAN: Broad edge from the event "state" sentinel. Pair with tsan_release(m_state.get()) in set().
+            detail::tsan_acquire(m_event.m_state.get());
+        }
 
         /// @brief The next awaiter in line for this event, nullptr if this is the end.
         awaiter* m_next{nullptr};
@@ -77,7 +88,7 @@ public:
      *                      set the event to already be triggered.
      */
     explicit event(bool initially_set = false) noexcept;
-    ~event() = default;
+    ~event() noexcept;
 
     event(const event&)                    = delete;
     event(event&&)                         = delete;
@@ -87,7 +98,10 @@ public:
     /**
      * @return True if this event is currently in the set state.
      */
-    auto is_set() const noexcept -> bool { return m_state.load(std::memory_order::acquire) == this; }
+    auto is_set() const noexcept -> bool
+    {
+        return m_state && m_state->value.load(std::memory_order::acquire) == m_state.get();
+    }
 
     /**
      * Sets this event and resumes all awaiters.  Note that all waiters will be resumed onto this
@@ -104,9 +118,12 @@ public:
     template<concepts::executor executor_type>
     auto set(std::shared_ptr<executor_type> e, resume_order_policy policy = resume_order_policy::lifo) noexcept -> void
     {
-        void* old_value = m_state.exchange(this, std::memory_order::acq_rel);
-        if (old_value != this)
+        void* const set_state = m_state.get();
+        void*       old_value = m_state->value.exchange(set_state, std::memory_order::acq_rel);
+        if (old_value != set_state)
         {
+            // TSAN: Broad release on the event state object to establish HB to awaiters' await_resume.
+            detail::tsan_release(m_state.get());
             // If FIFO has been requsted then reverse the order upon resuming.
             if (policy == resume_order_policy::fifo)
             {
@@ -143,7 +160,12 @@ private:
     /// 1) nullptr == not set
     /// 2) awaiter* == linked list of awaiters waiting for the event to trigger.
     /// 3) this == The event is triggered and all awaiters are resumed.
-    mutable std::atomic<void*> m_state;
+    struct state
+    {
+        std::atomic<void*> value{nullptr};
+    };
+    // Store state on heap to avoid cross-thread access to another thread's stack memory.
+    std::unique_ptr<state> m_state;
 
     /**
      * Reverses the set of waiters from LIFO->FIFO and returns the new head.

@@ -1,8 +1,11 @@
 #pragma once
 
+#include "coro/detail/tsan.hpp"
 #include "coro/expected.hpp"
 #include "coro/mutex.hpp"
 #include "coro/task.hpp"
+// Explicitly include awaiter list helpers for push/pop operations
+#include "coro/detail/awaiter_list.hpp"
 
 #include <array>
 #include <atomic>
@@ -42,18 +45,36 @@ private:
         running,
         /// @brief The ring buffer is draining all elements, produce is no longer allowed.
         draining,
-        /// @brief The ring buffer is fully shutdown, all produce and consume tasks will be woken up with result::stopped.
+        /// @brief The ring buffer is fully shutdown, all produce and consume tasks will be woken up with
+        /// result::stopped.
         stopped,
+    };
+
+    // Wait-node types used for cross-thread hand-off; store pointer to the operation
+    // instead of exposing the coroutine frame object as the list node.
+    struct produce_wait_node
+    {
+        produce_wait_node*      m_next{nullptr};
+        std::coroutine_handle<> m_awaiting_coroutine{};
+        std::atomic<int>        m_ready{0};
+        // Payload to transfer from producer to ring buffer without touching producer's frame.
+        std::optional<element> m_e{std::nullopt};
+    };
+
+    struct consume_wait_node
+    {
+        consume_wait_node*      m_next{nullptr};
+        std::coroutine_handle<> m_awaiting_coroutine{};
+        std::atomic<int>        m_ready{0};
+        // Payload to transfer from ring buffer to consumer without touching consumer's frame.
+        std::optional<element> m_e{std::nullopt};
     };
 
 public:
     /**
      * static_assert If `num_elements` == 0.
      */
-    ring_buffer()
-    {
-        static_assert(num_elements != 0, "num_elements cannot be zero");
-    }
+    ring_buffer() { static_assert(num_elements != 0, "num_elements cannot be zero"); }
 
     ~ring_buffer()
     {
@@ -69,10 +90,7 @@ public:
 
     struct produce_operation
     {
-        produce_operation(ring_buffer<element, num_elements>& rb, element e)
-            : m_rb(rb),
-              m_e(std::move(e))
-        {}
+        produce_operation(ring_buffer<element, num_elements>& rb, element e) : m_rb(rb), m_e(std::move(e)) {}
 
         auto await_ready() noexcept -> bool
         {
@@ -88,7 +106,7 @@ public:
             if (m_rb.m_used.load(std::memory_order::acquire) < num_elements)
             {
                 // There is guaranteed space to store
-                auto slot = m_rb.m_front.fetch_add(1, std::memory_order::acq_rel) % num_elements;
+                auto slot             = m_rb.m_front.fetch_add(1, std::memory_order::acq_rel) % num_elements;
                 m_rb.m_elements[slot] = std::move(m_e);
                 m_rb.m_used.fetch_add(1, std::memory_order::release);
                 mutex.unlock();
@@ -100,9 +118,33 @@ public:
 
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
         {
-            m_awaiting_coroutine = awaiting_coroutine;
-            m_next = m_rb.m_produce_waiters.exchange(this, std::memory_order::acq_rel);
-            m_rb.m_mutex.unlock();
+            // Capture stable pointers BEFORE publishing the node to avoid touching 'this' after enqueue
+            auto* rb   = &m_rb;
+            auto* list = &rb->m_produce_waiters;
+            auto* mtx  = &rb->m_mutex;
+
+            // Allocate a wait-node to avoid exposing the coroutine frame across threads.
+            m_node                       = new produce_wait_node{};
+            m_node->m_awaiting_coroutine = awaiting_coroutine;
+            // Move payload into the node so resumer thread doesn't touch our frame.
+            m_node->m_e = std::move(m_e);
+            m_e.reset();
+            // Record parent coroutine frame address for TSAN HB annotation chain
+            m_parent_coroutine = awaiting_coroutine;
+            // TSAN: establish HB from reads of this-awaitable to its await_resume via the same address
+            detail::tsan_release(this);
+            // TSAN: establish HB from this suspension point to later resume/destruction of parent frame
+            if (m_parent_coroutine)
+            {
+                detail::tsan_release(m_parent_coroutine.address());
+            }
+            // TSAN publish of stable addresses
+            detail::tsan_release(&m_node->m_awaiting_coroutine);
+            detail::tsan_release(m_node);
+            detail::tsan_release(rb);
+            // Enqueue
+            detail::awaiter_list_push(*list, m_node);
+            mtx->unlock();
             return true;
         }
 
@@ -111,15 +153,35 @@ public:
          */
         auto await_resume() -> ring_buffer_result::produce
         {
+            // Pair with await_suspend()'s tsan_release(this)
+            detail::tsan_acquire(this);
+            if (m_parent_coroutine)
+            {
+                detail::tsan_acquire(m_parent_coroutine.address());
+            }
+            // Fast-path: no suspension occurred, node was never allocated
+            if (m_node == nullptr)
+            {
+                return m_rb.m_running_state.load(std::memory_order::acquire) == running_state_t::running
+                           ? ring_buffer_result::produce::produced
+                           : ring_buffer_result::produce::stopped;
+            }
+
+            // Hand-off: acquire from node published in try_resume_producers()/shutdown
+            detail::tsan_acquire(m_node);
+            (void)m_node->m_ready.load(std::memory_order::acquire);
+            detail::tsan_acquire(&m_rb);
+            delete m_node;
+            m_node = nullptr;
             return m_rb.m_running_state.load(std::memory_order::acquire) == running_state_t::running
-                    ? ring_buffer_result::produce::produced
-                    : ring_buffer_result::produce::stopped;
+                       ? ring_buffer_result::produce::produced
+                       : ring_buffer_result::produce::stopped;
         }
 
-        /// If the operation needs to suspend, the coroutine to resume when the element can be produced.
-        std::coroutine_handle<> m_awaiting_coroutine;
-        /// Linked list of produce operations that are awaiting to produce their element.
-        produce_operation* m_next{nullptr};
+        // Cross-thread hand-off node
+        produce_wait_node* m_node{nullptr};
+        // Parent coroutine (the produce() coroutine) for TSAN HB annotations only.
+        std::coroutine_handle<> m_parent_coroutine{};
 
     private:
         template<typename element_subtype, size_t num_elements_subtype>
@@ -133,9 +195,7 @@ public:
 
     struct consume_operation
     {
-        explicit consume_operation(ring_buffer<element, num_elements>& rb)
-            : m_rb(rb)
-        {}
+        explicit consume_operation(ring_buffer<element, num_elements>& rb) : m_rb(rb) {}
 
         auto await_ready() noexcept -> bool
         {
@@ -150,8 +210,8 @@ public:
 
             if (m_rb.m_used.load(std::memory_order::acquire) > 0)
             {
-                auto slot = m_rb.m_back.fetch_add(1, std::memory_order::acq_rel) % num_elements;
-                m_e = std::move(m_rb.m_elements[slot]);
+                auto slot             = m_rb.m_back.fetch_add(1, std::memory_order::acq_rel) % num_elements;
+                m_e                   = std::move(m_rb.m_elements[slot]);
                 m_rb.m_elements[slot] = std::nullopt;
                 m_rb.m_used.fetch_sub(1, std::memory_order::release);
                 mutex.unlock();
@@ -163,9 +223,26 @@ public:
 
         auto await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> bool
         {
-            m_awaiting_coroutine = awaiting_coroutine;
-            m_next = m_rb.m_consume_waiters.exchange(this, std::memory_order::acq_rel);
-            m_rb.m_mutex.unlock();
+            // Capture stable pointers BEFORE publishing the node to avoid touching 'this' after enqueue
+            auto* rb   = &m_rb;
+            auto* list = &rb->m_consume_waiters;
+            auto* mtx  = &rb->m_mutex;
+
+            // Allocate node; don't expose coroutine frame across threads.
+            m_node                       = new consume_wait_node{};
+            m_node->m_awaiting_coroutine = awaiting_coroutine;
+            m_parent_coroutine           = awaiting_coroutine;
+            // TSAN: establish HB from reads of this-awaitable to its await_resume via the same address
+            detail::tsan_release(this);
+            if (m_parent_coroutine)
+            {
+                detail::tsan_release(m_parent_coroutine.address());
+            }
+            detail::tsan_release(&m_node->m_awaiting_coroutine);
+            detail::tsan_release(m_node);
+            detail::tsan_release(rb);
+            detail::awaiter_list_push(*list, m_node);
+            mtx->unlock();
             return true;
         }
 
@@ -174,20 +251,45 @@ public:
          */
         auto await_resume() -> expected<element, ring_buffer_result::consume>
         {
-            if (m_e.has_value())
+            // Pair with await_suspend()'s tsan_release(this)
+            detail::tsan_acquire(this);
+            if (m_parent_coroutine)
             {
+                detail::tsan_acquire(m_parent_coroutine.address());
+            }
+            // Fast-path: no suspension occurred, node was never allocated
+            if (m_node == nullptr)
+            {
+                if (m_rb.m_running_state.load(std::memory_order::acquire) == running_state_t::stopped)
+                {
+                    return unexpected<ring_buffer_result::consume>(ring_buffer_result::consume::stopped);
+                }
+                // We consumed a value in await_ready()
                 return expected<element, ring_buffer_result::consume>(std::move(m_e).value());
+            }
+
+            // Acquire from node; resumer placed the element into node->m_e.
+            detail::tsan_acquire(m_node);
+            (void)m_node->m_ready.load(std::memory_order::acquire);
+            detail::tsan_acquire(&m_rb);
+            if (m_node->m_e.has_value())
+            {
+                auto v = std::move(m_node->m_e).value();
+                delete m_node;
+                m_node = nullptr;
+                return expected<element, ring_buffer_result::consume>(std::move(v));
             }
             else // state is stopped
             {
+                delete m_node;
+                m_node = nullptr;
                 return unexpected<ring_buffer_result::consume>(ring_buffer_result::consume::stopped);
             }
         }
 
-        /// If the operation needs to suspend, the coroutine to resume when the element can be consumed.
-        std::coroutine_handle<> m_awaiting_coroutine;
-        /// Linked list of consume operations that are awaiting to consume an element.
-        consume_operation* m_next{nullptr};
+        // Cross-thread hand-off node
+        consume_wait_node*      m_node{nullptr};
+        std::coroutine_handle<> m_parent_coroutine{};
 
     private:
         template<typename element_subtype, size_t num_elements_subtype>
@@ -206,7 +308,12 @@ public:
      */
     [[nodiscard]] auto produce(element e) -> coro::task<ring_buffer_result::produce>
     {
+        // TSAN: pair with detail::tsan_release(this) in try_resume_* before resuming this coroutine
+        // This ensures HB before constructing awaitables below when we resume on another thread.
+        detail::tsan_acquire(this);
         co_await m_mutex.lock();
+        // TSAN: pair with detail::tsan_release(&m_mutex) in mutex::unlock before resuming this coroutine
+        detail::tsan_acquire(&m_mutex);
         auto result = co_await produce_operation{*this, std::move(e)};
         co_await try_resume_consumers();
         co_return result;
@@ -218,7 +325,12 @@ public:
      */
     [[nodiscard]] auto consume() -> coro::task<expected<element, ring_buffer_result::consume>>
     {
+        // TSAN: pair with detail::tsan_release(this) in try_resume_* before resuming this coroutine
+        // Ensures HB before any writes after cross-thread resume.
+        detail::tsan_acquire(this);
         co_await m_mutex.lock();
+        // TSAN: pair with detail::tsan_release(&m_mutex) in mutex::unlock before resuming this coroutine
+        detail::tsan_acquire(&m_mutex);
         auto result = co_await consume_operation{*this};
         co_await try_resume_producers();
         co_return result;
@@ -227,10 +339,7 @@ public:
     /**
      * @return The current number of elements contained in the ring buffer.
      */
-    auto size() const -> size_t
-    {
-        return m_used.load(std::memory_order::acquire);
-    }
+    auto size() const -> size_t { return m_used.load(std::memory_order::acquire); }
 
     /**
      * @return True if the ring buffer contains zero elements.
@@ -252,7 +361,8 @@ public:
 
         auto lk = co_await m_mutex.scoped_lock();
         // Only let one caller do the wake-ups, this can go from running or draining to stopped
-        if (!m_running_state.compare_exchange_strong(expected, running_state_t::stopped, std::memory_order::acq_rel, std::memory_order::relaxed))
+        if (!m_running_state.compare_exchange_strong(
+                expected, running_state_t::stopped, std::memory_order::acq_rel, std::memory_order::relaxed))
         {
             co_return;
         }
@@ -266,6 +376,15 @@ public:
         while (produce_waiters != nullptr)
         {
             auto* next = produce_waiters->m_next;
+            // TSAN: acquire on ring_buffer to observe await_suspend's release(&m_rb)
+            detail::tsan_acquire(this);
+            // TSAN: acquire on awaiter object to observe its publications before touching fields
+            detail::tsan_acquire(produce_waiters);
+            // Pair with await_suspend()'s publications on the stable addresses (avoid frame internals)
+            // Publish wake-up to waiter prior to resume()
+            produce_waiters->m_ready.store(1, std::memory_order::release);
+            // TSAN: additional release edge from ring_buffer to resumed producer coroutine
+            detail::tsan_release(this);
             produce_waiters->m_awaiting_coroutine.resume();
             produce_waiters = next;
         }
@@ -273,6 +392,16 @@ public:
         while (consume_waiters != nullptr)
         {
             auto* next = consume_waiters->m_next;
+            // TSAN: acquire on ring_buffer to observe await_suspend's release(&m_rb)
+            detail::tsan_acquire(this);
+            // TSAN: acquire on awaiter object to observe its publications before touching fields
+            detail::tsan_acquire(consume_waiters);
+            // Pair with await_suspend()'s publications on the stable addresses (avoid frame internals)
+            // Publish wake-up to waiter prior to resume()
+            consume_waiters->m_e.reset(); // indicate stopped to await_resume()
+            consume_waiters->m_ready.store(1, std::memory_order::release);
+            // TSAN: additional release edge from ring_buffer to resumed consumer coroutine
+            detail::tsan_release(this);
             consume_waiters->m_awaiting_coroutine.resume();
             consume_waiters = next;
         }
@@ -286,7 +415,8 @@ public:
         auto lk = co_await m_mutex.scoped_lock();
         // Do not allow any more produces, the state must be in running to drain.
         auto expected = running_state_t::running;
-        if (!m_running_state.compare_exchange_strong(expected, running_state_t::draining, std::memory_order::acq_rel, std::memory_order::relaxed))
+        if (!m_running_state.compare_exchange_strong(
+                expected, running_state_t::draining, std::memory_order::acq_rel, std::memory_order::relaxed))
         {
             co_return;
         }
@@ -297,6 +427,13 @@ public:
         while (produce_waiters != nullptr)
         {
             auto* next = produce_waiters->m_next;
+            // TSAN: acquire on ring_buffer to observe await_suspend's release(&m_rb)
+            detail::tsan_acquire(this);
+            // TSAN: acquire on awaiter object to observe its publications before touching fields
+            detail::tsan_acquire(produce_waiters);
+            // Pair with await_suspend()'s publications on the stable addresses (avoid frame internals)
+            // Publish wake-up to waiter prior to resume()
+            produce_waiters->m_ready.store(1, std::memory_order::release);
             produce_waiters->m_awaiting_coroutine.resume();
             produce_waiters = next;
         }
@@ -314,7 +451,10 @@ public:
      * Returns true if shutdown() or shutdown_drain() have been called on this coro::ring_buffer.
      * @return True if the coro::ring_buffer has been shutdown.
      */
-    [[nodiscard]] auto is_shutdown() const -> bool { return m_running_state.load(std::memory_order::acquire) != running_state_t::running; }
+    [[nodiscard]] auto is_shutdown() const -> bool
+    {
+        return m_running_state.load(std::memory_order::acquire) != running_state_t::running;
+    }
 
 private:
     friend produce_operation;
@@ -331,9 +471,9 @@ private:
     std::atomic<size_t> m_used{0};
 
     /// The LIFO list of produce waiters.
-    std::atomic<produce_operation*> m_produce_waiters{nullptr};
-    /// The LIFO list of consume watier.
-    std::atomic<consume_operation*> m_consume_waiters{nullptr};
+    std::atomic<produce_wait_node*> m_produce_waiters{nullptr};
+    /// The LIFO list of consume waiter.
+    std::atomic<consume_wait_node*> m_consume_waiters{nullptr};
 
     std::atomic<running_state_t> m_running_state{running_state_t::running};
 
@@ -344,15 +484,21 @@ private:
             auto lk = co_await m_mutex.scoped_lock();
             if (m_used.load(std::memory_order::acquire) < num_elements)
             {
-                auto* op = detail::awaiter_list_pop(m_produce_waiters);
-                if (op != nullptr)
+                auto* node = detail::awaiter_list_pop(m_produce_waiters);
+                if (node != nullptr)
                 {
-                    auto slot = m_front.fetch_add(1, std::memory_order::acq_rel) % num_elements;
-                    m_elements[slot] = std::move(op->m_e);
+                    // TSAN: acquire on node to see its publications
+                    detail::tsan_acquire(node);
+                    auto slot        = m_front.fetch_add(1, std::memory_order::acq_rel) % num_elements;
+                    m_elements[slot] = std::move(node->m_e);
                     m_used.fetch_add(1, std::memory_order::release);
 
+                    // Publish wake-up to waiter prior to resume()
+                    node->m_ready.store(1, std::memory_order::release);
                     lk.unlock();
-                    op->m_awaiting_coroutine.resume();
+                    // Resume via stored handle
+                    detail::tsan_release(node);
+                    node->m_awaiting_coroutine.resume();
                     continue;
                 }
             }
@@ -367,16 +513,20 @@ private:
             auto lk = co_await m_mutex.scoped_lock();
             if (m_used.load(std::memory_order::acquire) > 0)
             {
-                auto* op = detail::awaiter_list_pop(m_consume_waiters);
-                if (op != nullptr)
+                auto* node = detail::awaiter_list_pop(m_consume_waiters);
+                if (node != nullptr)
                 {
-                    auto slot = m_back.fetch_add(1, std::memory_order::acq_rel) % num_elements;
-                    op->m_e = std::move(m_elements[slot]);
+                    // TSAN: acquire on node to see its publications
+                    detail::tsan_acquire(node);
+                    auto slot        = m_back.fetch_add(1, std::memory_order::acq_rel) % num_elements;
+                    node->m_e        = std::move(m_elements[slot]);
                     m_elements[slot] = std::nullopt;
                     m_used.fetch_sub(1, std::memory_order::release);
+                    // Publish wake-up to waiter prior to resume()
+                    node->m_ready.store(1, std::memory_order::release);
                     lk.unlock();
-
-                    op->m_awaiting_coroutine.resume();
+                    detail::tsan_release(node);
+                    node->m_awaiting_coroutine.resume();
                     continue;
                 }
             }

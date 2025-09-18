@@ -5,7 +5,6 @@ namespace coro
 {
 thread_pool::schedule_operation::schedule_operation(thread_pool& tp) noexcept : m_thread_pool(tp)
 {
-
 }
 
 auto thread_pool::schedule_operation::await_suspend(std::coroutine_handle<> awaiting_coroutine) noexcept -> void
@@ -117,11 +116,16 @@ auto thread_pool::executor(std::size_t idx) -> void
             continue;
         }
 
-        auto handle = m_queue.front();
+        // Important: acquire on the exact queue slot address
+        // that was released on publish (see schedule_impl).
+        auto& slot = m_queue.front();
+        ::coro::detail::tsan_acquire(&slot);
+        auto handle = slot;
         m_queue.pop_front();
         lk.unlock();
 
         // Release the lock while executing the coroutine.
+        // TSAN: rely on acquire(&slot) above paired with release(&m_queue.back()) on enqueue.
         handle.resume();
         m_size.fetch_sub(1, std::memory_order::release);
     }
@@ -137,11 +141,14 @@ auto thread_pool::executor(std::size_t idx) -> void
             break;
         }
 
-        auto handle = m_queue.front();
+        auto& slot = m_queue.front();
+        ::coro::detail::tsan_acquire(&slot);
+        auto handle = slot;
         m_queue.pop_front();
         lk.unlock();
 
         // Release the lock while executing the coroutine.
+        // TSAN: rely on acquire(&slot) above paired with release(&m_queue.back()) on enqueue.
         handle.resume();
         m_size.fetch_sub(1, std::memory_order::release);
     }
@@ -162,6 +169,9 @@ auto thread_pool::schedule_impl(std::coroutine_handle<> handle) noexcept -> void
     {
         std::scoped_lock lk{m_wait_mutex};
         m_queue.emplace_back(handle);
+        // TSAN: publish work — release on the queue element address.
+        // The consumer in executor() performs acquire on the same address before resume().
+        ::coro::detail::tsan_release(&m_queue.back());
         m_wait_cv.notify_one();
     }
 }
